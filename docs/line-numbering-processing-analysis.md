@@ -94,3 +94,49 @@ These constants can be tuned per document corpus for better practical alignment.
 4. Test scanned PDFs (expect fallback behavior where extraction fails).
 5. Compare right-margin labels visually against 10th/20th line endpoints on at least 20 sample documents.
 
+## 8) Implemented improvements (March 9, 2026)
+
+The recommended improvements have now been implemented in code:
+
+1. **Rendering-aware extraction path (P1)**
+   - Added Poppler-based extraction using `pdftotext -bbox-layout` with true line bounding boxes.
+   - Engine selection is configurable:
+     - `PDF_LINE_EXTRACTOR_ENGINE=auto|poppler|smalot`
+   - In `auto`, backend tries Poppler first and falls back to Smalot if needed.
+
+2. **Font-aware width fallback (P1)**
+   - Smalot fallback now uses character-category width estimation instead of a single global factor.
+   - Supports improved handling for monospace-like fonts and mixed character widths.
+
+3. **Adaptive per-page calibration (P2)**
+   - Smalot grouping now computes adaptive Y tolerance from observed line spacing.
+   - Outlier lines are filtered with a width-based pass to reduce noisy anchors.
+
+4. **Rotation/transform handling (P2)**
+   - Smalot extraction now evaluates text matrix angle.
+   - Non-horizontal rotated segments are skipped to avoid polluting line anchors.
+   - Diagnostics report how many rotated segments were ignored.
+
+5. **Diagnostics and debug artifact mode (P3)**
+   - Detailed extractor and placement diagnostics are logged into `laravel.log`.
+   - Optional debug overlay mode draws anchor lines and label marks into output PDFs:
+     - `PDF_LINE_DEBUG_OVERLAY=true`
+   - Additional tuning/env knobs were added:
+     - `PDF_LINE_POPPLER_BINARY`
+     - `PDF_LINE_POPPLER_BASELINE_RATIO`
+     - `PDF_LINE_Y_TOLERANCE_PT`
+     - `PDF_LINE_NUMBER_INSET_PT`
+     - `PDF_LINE_PAGE_EDGE_PADDING_PT`
+     - `PDF_LINE_LABEL_WIDTH_FACTOR`
+     - `PDF_LINE_ENABLE_DIAGNOSTICS`
+
+## 9) Test status
+
+Automated backend tests were added and passed:
+
+1. `Tests\Unit\PdfLineExtractorTest`
+   - Verifies Poppler engine extracts ordered line anchors.
+2. `Tests\Feature\PdfLineNumberServiceTest`
+   - Generates a sample PDF, runs numbering, verifies output contains `-10` and `-20`.
+
+Current suite result: **4 passed, 0 failed**.

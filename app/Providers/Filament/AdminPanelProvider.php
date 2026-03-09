@@ -11,7 +11,6 @@ use Filament\Pages;
 use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
-use Filament\Widgets;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
@@ -28,6 +27,19 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            ->maxContentWidth('full')
+            ->sidebarFullyCollapsibleOnDesktop()
+             ->font(
+                //set custom panel font here
+                'Outfit'
+                // 'Kumbh Sans' 
+                // 'Montserrat'
+            )
+            // ->favicon(asset('images/echonet-logo.pngg'))
+
+            ->brandName('LegalLine')
+            // ->brandLogo(asset('images/echonet-logo.png'))
+            // ->brandLogoHeight('3.5rem')
             ->colors([
                 'primary' => Color::Amber,
             ])
@@ -38,8 +50,11 @@ class AdminPanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([
-                Widgets\AccountWidget::class,
-                Widgets\FilamentInfoWidget::class,
+                \App\Filament\Widgets\DashboardStatsOverview::class,
+                \App\Filament\Widgets\JobsTrendChart::class,
+                \App\Filament\Widgets\RevenueTrendChart::class,
+                \App\Filament\Widgets\PipelineStatusChart::class,
+                \App\Filament\Widgets\RecentPdfJobsTable::class,
             ])
             ->middleware([
                 EncryptCookies::class,

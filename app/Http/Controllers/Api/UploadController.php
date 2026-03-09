@@ -114,24 +114,12 @@ class UploadController extends Controller
             'job_id' => $job->id,
         ]);
 
-        if (! $paymentsEnabled) {
-            Log::info('[LegalLine] upload.store.dispatch_sync_enable_payment_disabled', ['job_id' => $job->id]);
-            try {
-                ProcessPdfJob::dispatchSync($job->id);
-            } catch (\Throwable $e) {
-                Log::error('[LegalLine] upload.store.dispatch_sync_failed', [
-                    'job_id' => $job->id,
-                    'message' => $e->getMessage(),
-                ]);
-                $job->update([
-                    'status' => 'failed',
-                    'error_message' => $e->getMessage(),
-                ]);
-            }
-        } else {
-            ProcessPdfJob::dispatch($job->id);
-            Log::info('[LegalLine] upload.store.dispatch_async', ['job_id' => $job->id]);
-        }
+        ProcessPdfJob::dispatch($job->id);
+        Log::info('[LegalLine] upload.store.dispatch_async', [
+            'job_id' => $job->id,
+            'enable_payment' => $paymentsEnabled,
+            'simulation_mode' => ! $paymentsEnabled,
+        ]);
 
         return response()->json([
             'job_id' => $job->id,

@@ -7,10 +7,7 @@ use setasign\Fpdi\Fpdi;
 
 class PdfLineNumberService
 {
-    /** Fallback right margin anchor (points) when no line anchors are available. */
-    private const FALLBACK_RIGHT_MARGIN_PT = 45;
-
-    /** Gap between detected text edge and line number label (points). */
+    /** Additional inset from selected page margin (points). */
     private const LINE_NUMBER_INSET_PT = 3;
 
     /** Keep labels away from absolute page edge (points). */
@@ -49,20 +46,34 @@ class PdfLineNumberService
         int $fontSizePt = 8,
         ?callable $onPageProcessed = null
     ): int {
-        Log::info('PdfLineNumberService: Starting line numbering (10th line)', [
+        $lineInsetPt = $this->lineNumberInsetPt();
+        $pageEdgePaddingPt = $this->pageEdgePaddingPt();
+        $labelWidthFactor = $this->labelWidthFactor();
+        $drawDebugOverlay = (bool) config('line_numbering.debug_overlay', false);
+        $diagnosticsEnabled = (bool) config('line_numbering.enable_diagnostics', true);
+
+        Log::info('[LegalLine] PdfLineNumberService: line numbering started', [
             'input_path' => $inputPath,
             'output_path' => $outputPath,
             'line_interval' => $lineInterval,
             'margin' => $margin,
             'font_size_pt' => $fontSizePt,
+            'line_number_inset_pt' => $lineInsetPt,
+            'page_edge_padding_pt' => $pageEdgePaddingPt,
+            'label_width_factor' => $labelWidthFactor,
+            'debug_overlay' => $drawDebugOverlay,
         ]);
 
         $lineAnchorsPerPage = $this->lineExtractor->getLineAnchorsPerPage($inputPath);
+        $extractorDiagnostics = $this->lineExtractor->getLastDiagnostics();
 
         // Use points so coordinates match (extractor and FPDI both in pt)
         $pdf = new Fpdi('P', 'pt');
         $pageCount = $pdf->setSourceFile($inputPath);
-        Log::debug('PdfLineNumberService: FPDI opened PDF', ['page_count' => $pageCount]);
+        Log::debug('[LegalLine] PdfLineNumberService: source opened', ['page_count' => $pageCount]);
+
+        $fallbackPages = 0;
+        $totalLabelsDrawn = 0;
 
         for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
             $templateId = $pdf->importPage($pageNo);
@@ -89,37 +100,58 @@ class PdfLineNumberService
                         $fontSizePt,
                         $margin,
                         $pageWidth,
-                        $lineAnchor['x_start'],
-                        $lineAnchor['x_end']
+                        $lineInsetPt,
+                        $pageEdgePaddingPt,
+                        $labelWidthFactor
                     );
 
                     $pdf->Text($x, $yFromTop, $displayLabel);
+
+                    if ($drawDebugOverlay) {
+                        $this->drawDebugOverlay($pdf, $pageHeight, $lineAnchor, $x);
+                    }
+
                     $labelsDrawn++;
                 }
             } else {
+                $fallbackPages++;
                 // Fallback: fixed grid when no lines detected (e.g. image-only page)
                 $usableHeight = $pageHeight - self::TOP_MARGIN_PT - self::BOTTOM_MARGIN_PT;
                 $totalGridLines = (int) floor($usableHeight / self::LINE_HEIGHT_PT);
                 for ($lineNumber = $lineInterval; $lineNumber <= $totalGridLines; $lineNumber += $lineInterval) {
                     $yFromTop = self::TOP_MARGIN_PT + ($lineNumber * self::LINE_HEIGHT_PT);
                     $displayLabel = '-' . $lineNumber;
-                    $x = $margin === 'left'
-                        ? self::PAGE_EDGE_PADDING_PT
-                        : max(
-                            self::PAGE_EDGE_PADDING_PT,
-                            $pageWidth - self::FALLBACK_RIGHT_MARGIN_PT
-                        );
+                    $x = $this->resolveLabelX(
+                        $displayLabel,
+                        $fontSizePt,
+                        $margin,
+                        $pageWidth,
+                        $lineInsetPt,
+                        $pageEdgePaddingPt,
+                        $labelWidthFactor
+                    );
                     $pdf->Text($x, $yFromTop, $displayLabel);
+
+                    if ($drawDebugOverlay) {
+                        $this->drawFallbackDebugOverlay($pdf, $x, $yFromTop);
+                    }
+
                     $labelsDrawn++;
                 }
             }
 
-            Log::debug('PdfLineNumberService: Page processed', [
+            $totalLabelsDrawn += $labelsDrawn;
+            $pageDiagnostics = is_array($extractorDiagnostics['pages'] ?? null)
+                ? ($extractorDiagnostics['pages'][$pageNo] ?? null)
+                : null;
+
+            Log::debug('[LegalLine] PdfLineNumberService: page processed', [
                 'page' => $pageNo,
                 'total_pages' => $pageCount,
                 'lines_on_page' => count($lineAnchors),
                 'labels_drawn' => $labelsDrawn,
                 'page_size_pt' => ['width' => $pageWidth, 'height' => $pageHeight],
+                'extractor_page_diagnostics' => $diagnosticsEnabled ? $pageDiagnostics : null,
             ]);
 
             if ($onPageProcessed !== null) {
@@ -128,9 +160,17 @@ class PdfLineNumberService
         }
 
         $pdf->Output('F', $outputPath);
-        Log::info('PdfLineNumberService: Output written successfully', [
+        Log::info('[LegalLine] PdfLineNumberService: output written', [
             'output_path' => $outputPath,
             'total_pages' => $pageCount,
+            'total_labels_drawn' => $totalLabelsDrawn,
+            'fallback_pages' => $fallbackPages,
+            'fallback_usage_rate' => $pageCount > 0 ? round($fallbackPages / $pageCount, 4) : 0.0,
+            'extractor_summary' => $diagnosticsEnabled ? [
+                'engine_preference' => $extractorDiagnostics['engine_preference'] ?? null,
+                'engine_used' => $extractorDiagnostics['engine_used'] ?? null,
+                'total_lines_detected' => $extractorDiagnostics['total_lines_detected'] ?? null,
+            ] : null,
         ]);
 
         return $pageCount;
@@ -157,28 +197,64 @@ class PdfLineNumberService
         int $fontSizePt,
         string $margin,
         float $pageWidth,
-        float $lineStartX,
-        float $lineEndX
+        float $lineInsetPt,
+        float $pageEdgePaddingPt,
+        float $labelWidthFactor
     ): float {
-        $labelWidth = $this->estimateLabelWidth($label, $fontSizePt);
+        $labelWidth = $this->estimateLabelWidth($label, $fontSizePt, $labelWidthFactor);
+        $effectiveInset = max(0.0, $pageEdgePaddingPt + $lineInsetPt);
+        $maxX = max($effectiveInset, $pageWidth - $labelWidth - $effectiveInset);
 
         if ($margin === 'left') {
-            $x = $lineStartX - $labelWidth - self::LINE_NUMBER_INSET_PT;
-
-            return max(self::PAGE_EDGE_PADDING_PT, $x);
+            return $effectiveInset;
         }
 
-        $x = $lineEndX + self::LINE_NUMBER_INSET_PT;
-        $maxX = $pageWidth - $labelWidth - self::PAGE_EDGE_PADDING_PT;
-
-        return min($maxX, max(self::PAGE_EDGE_PADDING_PT, $x));
+        return $maxX;
     }
 
-    private function estimateLabelWidth(string $label, int $fontSizePt): float
+    private function estimateLabelWidth(string $label, int $fontSizePt, float $labelWidthFactor): float
     {
         $charCount = strlen($label);
         $effectiveFontSize = $fontSizePt > 0 ? $fontSizePt : 8;
 
-        return $charCount * $effectiveFontSize * self::LABEL_WIDTH_FACTOR;
+        return $charCount * $effectiveFontSize * $labelWidthFactor;
+    }
+
+    private function lineNumberInsetPt(): float
+    {
+        return max(0.5, (float) config('line_numbering.line_number_inset_pt', self::LINE_NUMBER_INSET_PT));
+    }
+
+    private function pageEdgePaddingPt(): float
+    {
+        return max(2.0, (float) config('line_numbering.page_edge_padding_pt', self::PAGE_EDGE_PADDING_PT));
+    }
+
+    private function labelWidthFactor(): float
+    {
+        return max(0.35, min(1.0, (float) config('line_numbering.label_width_factor', self::LABEL_WIDTH_FACTOR)));
+    }
+
+    /**
+     * @param  array{y: float, x_start: float, x_end: float}  $lineAnchor
+     */
+    private function drawDebugOverlay(Fpdi $pdf, float $pageHeight, array $lineAnchor, float $labelX): void
+    {
+        $yFromTop = $pageHeight - $lineAnchor['y'];
+        $pdf->SetDrawColor(56, 189, 248);
+        $pdf->SetLineWidth(0.4);
+        $pdf->Line($lineAnchor['x_start'], $yFromTop, $lineAnchor['x_end'], $yFromTop);
+
+        $pdf->SetDrawColor(239, 68, 68);
+        $pdf->Line($labelX - 2, $yFromTop, $labelX + 2, $yFromTop);
+        $pdf->Line($labelX, $yFromTop - 2, $labelX, $yFromTop + 2);
+    }
+
+    private function drawFallbackDebugOverlay(Fpdi $pdf, float $x, float $yFromTop): void
+    {
+        $pdf->SetDrawColor(249, 115, 22);
+        $pdf->SetLineWidth(0.4);
+        $pdf->Line($x - 2, $yFromTop, $x + 2, $yFromTop);
+        $pdf->Line($x, $yFromTop - 2, $x, $yFromTop + 2);
     }
 }
