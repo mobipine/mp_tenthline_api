@@ -1,0 +1,268 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Payment;
+use App\Models\User;
+use App\Notifications\Auth\WelcomeCustomerNotification;
+use App\Settings\AppSettings;
+use App\Services\MpesaService;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Str;
+use Spatie\Permission\Models\Role;
+
+class PaymentController extends Controller
+{
+    public function __construct(
+        protected AppSettings $settings,
+        protected MpesaService $mpesa
+    ) {}
+
+    public function initiate(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'phone' => ['required', 'string', 'regex:/^(?:254[0-9]{9}|0[0-9]{9})$/'],
+            'email' => ['required', 'string', 'email'],
+        ]);
+
+        $phone = $this->normalizePhone($validated['phone']);
+        $email = strtolower($validated['email']);
+        $amount = (float) $this->settings->price_per_document;
+        $reference = Payment::generateReference();
+        $paymentsEnabled = (bool) $this->settings->enable_payment;
+
+        [$user, $issuedToken, $createdByPayment] = $this->resolveUserForPayment($request, $email, $phone);
+
+        Log::info('[LegalLine] payment.initiate.received', [
+            'phone' => $phone,
+            'email' => $email,
+            'user_id' => $user->id,
+            'created_by_payment' => $createdByPayment,
+            'amount' => $amount,
+            'currency' => $this->settings->currency,
+            'enable_payment' => $paymentsEnabled,
+            'simulation_mode' => ! $paymentsEnabled,
+        ]);
+
+        $payment = Payment::create([
+            'amount' => $amount,
+            'currency' => $this->settings->currency,
+            'user_id' => $user->id,
+            'email' => $email,
+            'phone' => $phone,
+            'reference' => $reference,
+            'status' => 'pending',
+        ]);
+
+        Log::info('[LegalLine] payment.initiate.created', [
+            'payment_id' => $payment->id,
+            'reference' => $reference,
+            'user_id' => $user->id,
+        ]);
+
+        if ($paymentsEnabled) {
+            $result = $this->mpesa->stkPush($phone, $amount, $reference, $payment->id);
+            Log::info('[LegalLine] payment.initiate.stk_response', [
+                'payment_id' => $payment->id,
+                'reference' => $reference,
+                'has_checkout_request_id' => isset($result['CheckoutRequestID']),
+            ]);
+
+            if (isset($result['CheckoutRequestID'])) {
+                $payment->update([
+                    'mpesa_merchant_request_id' => $result['MerchantRequestID'] ?? null,
+                    'mpesa_checkout_request_id' => $result['CheckoutRequestID'],
+                ]);
+            }
+        } else {
+            Log::info('[LegalLine] payment.initiate.simulation_skip_stk_enable_payment_disabled', [
+                'payment_id' => $payment->id,
+                'reference' => $reference,
+            ]);
+        }
+
+        return response()->json([
+            'payment_id' => $payment->id,
+            'reference' => $reference,
+            'message' => 'Complete payment on your phone.',
+            'created_account' => $createdByPayment,
+            'auth_token' => $issuedToken,
+            'user' => $this->serializeUser($user),
+        ]);
+    }
+
+    public function status(Request $request, string $reference): JsonResponse
+    {
+        $payment = Payment::where('reference', $reference)->firstOrFail();
+        $paymentsEnabled = (bool) $this->settings->enable_payment;
+        $elapsedSeconds = $payment->created_at
+            ? abs(now()->timestamp - $payment->created_at->timestamp)
+            : null;
+        $requestUser = auth('sanctum')->user();
+
+        if ($requestUser && $payment->user_id && (int) $requestUser->id !== (int) $payment->user_id) {
+            Log::warning('[LegalLine] payment.status.forbidden', [
+                'reference' => $reference,
+                'payment_user_id' => $payment->user_id,
+                'request_user_id' => $requestUser->id,
+            ]);
+
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (
+            ! $paymentsEnabled
+            && $payment->status === 'pending'
+            && $elapsedSeconds !== null
+            && $elapsedSeconds >= 5
+        ) {
+            $payment->update([
+                'status' => 'completed',
+                'mpesa_result_code' => '0',
+                'mpesa_callback_payload' => [
+                    'simulated' => true,
+                    'mode' => 'enable_payment_disabled',
+                    'completed_at' => now()->toIso8601String(),
+                ],
+            ]);
+            $payment->refresh();
+
+            Log::info('[LegalLine] payment.status.simulated_completed', [
+                'payment_id' => $payment->id,
+                'reference' => $payment->reference,
+                'user_id' => $payment->user_id,
+            ]);
+        }
+
+        Log::info('[LegalLine] payment.status.response', [
+            'payment_id' => $payment->id,
+            'reference' => $payment->reference,
+            'status' => $payment->status,
+            'enable_payment' => $paymentsEnabled,
+            'simulation_mode' => ! $paymentsEnabled,
+            'elapsed_seconds' => $elapsedSeconds,
+        ]);
+
+        return response()->json([
+            'status' => $payment->status,
+            'amount' => (float) $payment->amount,
+            'currency' => $payment->currency,
+        ]);
+    }
+
+    /**
+     * @return array{0: User, 1: string|null, 2: bool}
+     */
+    protected function resolveUserForPayment(Request $request, string $email, string $phone): array
+    {
+        $requestUser = auth('sanctum')->user();
+
+        if ($requestUser) {
+            if ($requestUser->phone !== $phone) {
+                $requestUser->forceFill(['phone' => $phone])->save();
+
+                Log::info('[LegalLine] payment.initiate.auth_user_phone_updated', [
+                    'user_id' => $requestUser->id,
+                    'email' => $requestUser->email,
+                    'phone' => $phone,
+                ]);
+            }
+
+            $this->ensureCustomerRole($requestUser);
+            return [$requestUser, null, false];
+        }
+
+        $existingUser = User::where('email', $email)->first();
+        if ($existingUser) {
+            Log::info('[LegalLine] payment.initiate.existing_user_requires_sign_in', [
+                'email' => $email,
+                'user_id' => $existingUser->id,
+            ]);
+
+            throw new HttpResponseException(response()->json([
+                'message' => 'This email already has an account. Please sign in to continue.',
+                'code' => 'existing_user_sign_in_required',
+            ], 409));
+        }
+
+        $createdByPayment = true;
+        $user = User::create([
+            'name' => $this->nameFromEmail($email),
+            'email' => $email,
+            'phone' => $phone,
+            'password' => Str::random(40),
+        ]);
+
+        try {
+            $user->notify(new WelcomeCustomerNotification);
+        } catch (\Throwable $e) {
+            Log::warning('[LegalLine] payment.user_creation.welcome_email_failed', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        $status = Password::sendResetLink(['email' => $email]);
+        Log::info('[LegalLine] payment.user_creation.password_setup_link', [
+            'user_id' => $user->id,
+            'email' => $email,
+            'status' => $status,
+        ]);
+
+        $this->ensureCustomerRole($user);
+
+        $token = $user->createToken('frontend-session')->plainTextToken;
+
+        return [$user, $token, $createdByPayment];
+    }
+
+    protected function nameFromEmail(string $email): string
+    {
+        $localPart = Str::before($email, '@');
+        $label = trim(str_replace(['.', '_', '-'], ' ', $localPart));
+
+        return Str::title($label ?: 'LegalLine Customer');
+    }
+
+    protected function serializeUser(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone,
+        ];
+    }
+
+    protected function ensureCustomerRole(User $user): void
+    {
+        if ($user->hasRole('super_admin') || $user->hasRole('customer')) {
+            return;
+        }
+
+        try {
+            $customerRole = Role::findOrCreate('customer');
+            $user->assignRole($customerRole);
+        } catch (\Throwable $e) {
+            Log::warning('[LegalLine] payment.user_creation.customer_role_assignment_failed', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    protected function normalizePhone(string $rawPhone): string
+    {
+        $digits = preg_replace('/\D+/', '', $rawPhone) ?? '';
+        $lastNine = substr($digits, -9);
+
+        return '254' . $lastNine;
+    }
+}
