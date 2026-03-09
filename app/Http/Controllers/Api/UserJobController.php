@@ -27,8 +27,11 @@ class UserJobController extends Controller
                     'progress' => $job->progress,
                     'processed_pages' => $job->processed_pages,
                     'total_pages' => $job->total_pages,
+                    'line_interval' => $job->line_interval,
+                    'page_count' => $job->page_count,
                     'eta_seconds' => $job->eta_seconds,
                     'error_message' => $job->error_message,
+                    'storage_deleted_at' => optional($job->storage_deleted_at)->toIso8601String(),
                     'created_at' => optional($job->created_at)->toIso8601String(),
                     'download_url' => $job->status === 'completed' && $job->output_path
                         ? url("/api/job/{$job->id}/download")

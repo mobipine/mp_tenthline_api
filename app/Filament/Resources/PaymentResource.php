@@ -31,6 +31,10 @@ class PaymentResource extends Resource
                     ->numeric(),
                 Forms\Components\TextInput::make('currency')
                     ->required(),
+                Forms\Components\TextInput::make('page_count')
+                    ->label('Pages')
+                    ->required()
+                    ->numeric(),
                 Forms\Components\Select::make('user_id')
                     ->label('User')
                     ->relationship('user', 'email')
@@ -65,6 +69,9 @@ class PaymentResource extends Resource
                     ->sortable(),
                 Tables\Columns\TextColumn::make('currency')
                     ->searchable(),
+                Tables\Columns\TextColumn::make('page_count')
+                    ->label('Pages')
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('user.email')
                     ->label('User')
                     ->searchable(),

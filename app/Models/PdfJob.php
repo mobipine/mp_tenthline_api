@@ -24,8 +24,10 @@ class PdfJob extends Model
         'output_path',
         'payment_id',
         'line_interval',
+        'page_count',
         'margin',
         'font_size_pt',
+        'storage_deleted_at',
     ];
 
     protected $casts = [
@@ -34,7 +36,9 @@ class PdfJob extends Model
         'progress' => 'integer',
         'eta_seconds' => 'integer',
         'line_interval' => 'integer',
+        'page_count' => 'integer',
         'font_size_pt' => 'integer',
+        'storage_deleted_at' => 'datetime',
     ];
 
     public function payment(): BelongsTo

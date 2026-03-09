@@ -25,6 +25,9 @@ class PdfJobsRelationManager extends RelationManager
                 Forms\Components\TextInput::make('line_interval')
                     ->required()
                     ->numeric(),
+                Forms\Components\TextInput::make('page_count')
+                    ->required()
+                    ->numeric(),
                 Forms\Components\TextInput::make('margin')
                     ->required(),
                 Forms\Components\TextInput::make('font_size_pt')
@@ -55,6 +58,9 @@ class PdfJobsRelationManager extends RelationManager
                 Tables\Columns\TextColumn::make('processed_pages')
                     ->label('Pages')
                     ->formatStateUsing(fn ($state, $record): string => "{$state}/{$record->total_pages}"),
+                Tables\Columns\TextColumn::make('line_interval')
+                    ->label('Interval')
+                    ->suffix(' lines'),
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable(),
@@ -66,6 +72,7 @@ class PdfJobsRelationManager extends RelationManager
                         'processing' => 'Processing',
                         'completed' => 'Completed',
                         'failed' => 'Failed',
+                        'deleted' => 'Deleted',
                     ]),
             ])
             ->headerActions([
@@ -77,4 +84,3 @@ class PdfJobsRelationManager extends RelationManager
             ]);
     }
 }
-

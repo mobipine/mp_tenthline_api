@@ -12,7 +12,7 @@ class ConfigController extends Controller
     {
         return response()->json([
             'enable_payment' => $settings->enable_payment,
-            'price_per_document' => (float) $settings->price_per_document,
+            'price_per_page' => (float) $settings->price_per_page,
             'currency' => $settings->currency,
             'max_file_size_mb' => $settings->max_file_size_mb,
             'max_pages' => $settings->max_pages,

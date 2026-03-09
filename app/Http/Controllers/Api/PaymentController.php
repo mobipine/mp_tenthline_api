@@ -8,11 +8,11 @@ use App\Models\User;
 use App\Notifications\Auth\WelcomeCustomerNotification;
 use App\Settings\AppSettings;
 use App\Services\MpesaService;
+use App\Services\PdfPageCounter;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use Spatie\Permission\Models\Role;
 
@@ -20,19 +20,55 @@ class PaymentController extends Controller
 {
     public function __construct(
         protected AppSettings $settings,
-        protected MpesaService $mpesa
+        protected MpesaService $mpesa,
+        protected PdfPageCounter $pageCounter
     ) {}
+
+    public function quote(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file' => ['required', 'file', 'mimes:pdf', 'max:' . ($this->settings->max_file_size_mb * 1024)],
+        ]);
+
+        $file = $request->file('file');
+        if (! $file || $file->getClientOriginalExtension() !== 'pdf') {
+            return response()->json(['message' => 'Only PDF files are allowed.'], 422);
+        }
+
+        $pageCount = $this->pageCounter->countPages($file->getRealPath());
+        if ($pageCount < 1) {
+            return response()->json(['message' => 'Could not read pages from this PDF.'], 422);
+        }
+        if ($pageCount > $this->settings->max_pages) {
+            return response()->json([
+                'message' => "This PDF has {$pageCount} pages. Max allowed is {$this->settings->max_pages}.",
+            ], 422);
+        }
+
+        $unitPrice = (float) $this->settings->price_per_page;
+        $amount = round($unitPrice * $pageCount, 2);
+
+        return response()->json([
+            'page_count' => $pageCount,
+            'unit_price' => $unitPrice,
+            'amount' => $amount,
+            'currency' => $this->settings->currency,
+        ]);
+    }
 
     public function initiate(Request $request): JsonResponse
     {
         $validated = $request->validate([
             'phone' => ['required', 'string', 'regex:/^(?:254[0-9]{9}|0[0-9]{9})$/'],
             'email' => ['required', 'string', 'email'],
+            'page_count' => ['required', 'integer', 'min:1', 'max:' . $this->settings->max_pages],
         ]);
 
         $phone = $this->normalizePhone($validated['phone']);
         $email = strtolower($validated['email']);
-        $amount = (float) $this->settings->price_per_document;
+        $pageCount = (int) $validated['page_count'];
+        $unitPrice = (float) $this->settings->price_per_page;
+        $amount = round($unitPrice * $pageCount, 2);
         $reference = Payment::generateReference();
         $paymentsEnabled = (bool) $this->settings->enable_payment;
 
@@ -43,6 +79,8 @@ class PaymentController extends Controller
             'email' => $email,
             'user_id' => $user->id,
             'created_by_payment' => $createdByPayment,
+            'page_count' => $pageCount,
+            'unit_price' => $unitPrice,
             'amount' => $amount,
             'currency' => $this->settings->currency,
             'enable_payment' => $paymentsEnabled,
@@ -52,6 +90,7 @@ class PaymentController extends Controller
         $payment = Payment::create([
             'amount' => $amount,
             'currency' => $this->settings->currency,
+            'page_count' => $pageCount,
             'user_id' => $user->id,
             'email' => $email,
             'phone' => $phone,
@@ -93,6 +132,10 @@ class PaymentController extends Controller
             'created_account' => $createdByPayment,
             'auth_token' => $issuedToken,
             'user' => $this->serializeUser($user),
+            'page_count' => $pageCount,
+            'unit_price' => $unitPrice,
+            'amount' => $amount,
+            'currency' => $this->settings->currency,
         ]);
     }
 
@@ -152,6 +195,7 @@ class PaymentController extends Controller
             'status' => $payment->status,
             'amount' => (float) $payment->amount,
             'currency' => $payment->currency,
+            'page_count' => (int) $payment->page_count,
         ]);
     }
 
@@ -185,7 +229,7 @@ class PaymentController extends Controller
             ]);
 
             throw new HttpResponseException(response()->json([
-                'message' => 'This email already has an account. Please sign in to continue.',
+                'message' => 'This email already has an account. Please sign in with OTP to continue.',
                 'code' => 'existing_user_sign_in_required',
             ], 409));
         }
@@ -207,13 +251,6 @@ class PaymentController extends Controller
                 'message' => $e->getMessage(),
             ]);
         }
-
-        $status = Password::sendResetLink(['email' => $email]);
-        Log::info('[LegalLine] payment.user_creation.password_setup_link', [
-            'user_id' => $user->id,
-            'email' => $email,
-            'status' => $status,
-        ]);
 
         $this->ensureCustomerRole($user);
 

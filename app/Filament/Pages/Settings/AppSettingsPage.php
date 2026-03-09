@@ -24,7 +24,7 @@ class AppSettingsPage extends Page implements HasForms
     {
         $this->form->fill([
             'enable_payment' => $settings->enable_payment,
-            'price_per_document' => $settings->price_per_document,
+            'price_per_page' => $settings->price_per_page,
             'currency' => $settings->currency,
             'max_file_size_mb' => $settings->max_file_size_mb,
             'max_pages' => $settings->max_pages,
@@ -40,8 +40,8 @@ class AppSettingsPage extends Page implements HasForms
                         Forms\Components\Toggle::make('enable_payment')
                             ->label('Require payment before upload')
                             ->helperText('When on, users must pay via M-Pesa before they can upload a PDF.'),
-                        Forms\Components\TextInput::make('price_per_document')
-                            ->label('Price per document')
+                        Forms\Components\TextInput::make('price_per_page')
+                            ->label('Price per page')
                             ->numeric()
                             ->minValue(0)
                             ->step(0.01)
@@ -72,7 +72,7 @@ class AppSettingsPage extends Page implements HasForms
     {
         $data = $this->form->getState();
         $settings->enable_payment = (bool) $data['enable_payment'];
-        $settings->price_per_document = (float) $data['price_per_document'];
+        $settings->price_per_page = (float) $data['price_per_page'];
         $settings->currency = (string) $data['currency'];
         $settings->max_file_size_mb = (int) $data['max_file_size_mb'];
         $settings->max_pages = (int) $data['max_pages'];

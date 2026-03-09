@@ -7,6 +7,7 @@ use App\Jobs\ProcessPdfJob;
 use App\Models\Payment;
 use App\Models\PdfJob;
 use App\Settings\AppSettings;
+use App\Services\PdfPageCounter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -14,7 +15,9 @@ use Illuminate\Support\Facades\Storage;
 
 class UploadController extends Controller
 {
-    private const FIXED_LINE_INTERVAL = 10;
+    public function __construct(
+        protected PdfPageCounter $pageCounter
+    ) {}
 
     public function store(Request $request, AppSettings $settings): JsonResponse
     {
@@ -22,7 +25,7 @@ class UploadController extends Controller
         Log::info('[LegalLine] upload.store.received', [
             'enable_payment' => $paymentsEnabled,
             'simulation_mode' => ! $paymentsEnabled,
-            'line_interval' => self::FIXED_LINE_INTERVAL,
+            'line_interval' => $request->input('line_interval'),
             'margin' => $request->input('margin'),
             'font_size_pt' => $request->input('font_size_pt'),
             'has_file' => $request->hasFile('file'),
@@ -65,6 +68,7 @@ class UploadController extends Controller
 
         $request->validate([
             'file' => ['required', 'file', 'mimes:pdf', 'max:' . ($settings->max_file_size_mb * 1024)],
+            'line_interval' => ['sometimes', 'integer', 'in:5,10'],
             'margin' => ['sometimes', 'string', 'in:left,right'],
             'font_size_pt' => ['sometimes', 'integer', 'in:8,9,10'],
         ]);
@@ -79,11 +83,35 @@ class UploadController extends Controller
             return response()->json(['message' => 'Only PDF files are allowed.'], 422);
         }
 
+        $pageCount = $this->pageCounter->countPages($file->getRealPath());
+        if ($pageCount < 1) {
+            return response()->json(['message' => 'Could not read pages from this PDF.'], 422);
+        }
+        if ($pageCount > $settings->max_pages) {
+            return response()->json([
+                'message' => "This PDF has {$pageCount} pages. Max allowed is {$settings->max_pages}.",
+            ], 422);
+        }
+
+        if ((int) $payment->page_count !== $pageCount) {
+            Log::warning('[LegalLine] upload.store.page_count_mismatch', [
+                'payment_id' => $payment->id,
+                'payment_page_count' => (int) $payment->page_count,
+                'uploaded_page_count' => $pageCount,
+            ]);
+
+            return response()->json([
+                'message' => 'Uploaded file pages do not match the paid page count. Please start payment again.',
+            ], 422);
+        }
+
         $job = new PdfJob([
             'filename' => $file->getClientOriginalName(),
             'status' => 'pending',
             'user_id' => $payment->user_id ?? $request->user()?->id,
-            'line_interval' => self::FIXED_LINE_INTERVAL,
+            'line_interval' => (int) $request->input('line_interval', 10),
+            'page_count' => $pageCount,
+            'total_pages' => $pageCount,
             'margin' => $request->input('margin', 'left'),
             'font_size_pt' => (int) $request->input('font_size_pt', 8),
         ]);
@@ -95,6 +123,7 @@ class UploadController extends Controller
             'reference' => $reference,
             'filename' => $job->filename,
             'line_interval' => $job->line_interval,
+            'page_count' => $job->page_count,
             'margin' => $job->margin,
             'font_size_pt' => $job->font_size_pt,
         ]);

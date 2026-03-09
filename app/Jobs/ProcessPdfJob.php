@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Events\PdfJobUpdated;
 use App\Models\PdfJob;
+use App\Notifications\PdfJob\PdfJobCompletedNotification;
 use App\Services\PdfLineNumberService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -13,12 +14,11 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 
 class ProcessPdfJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
-
-    private const FIXED_LINE_INTERVAL = 10;
 
     public int $tries = 2;
 
@@ -60,7 +60,7 @@ class ProcessPdfJob implements ShouldQueue
 
         Log::info('[LegalLine] ProcessPdfJob: Processing with options', [
             'job_id' => $this->pdfJobId,
-            'line_interval' => self::FIXED_LINE_INTERVAL,
+            'line_interval' => $job->line_interval ?? 10,
             'margin' => $job->margin ?? 'left',
             'font_size_pt' => $job->font_size_pt ?? 8,
         ]);
@@ -71,7 +71,7 @@ class ProcessPdfJob implements ShouldQueue
             $totalPages = $pdfService->addLineNumbers(
                 $inputPath,
                 $outputPath,
-                self::FIXED_LINE_INTERVAL,
+                (int) ($job->line_interval ?? 10),
                 $job->margin ?? 'left',
                 $job->font_size_pt ?? 8,
                 function (int $pageNo, int $total) use ($startTime) {
@@ -117,6 +117,8 @@ class ProcessPdfJob implements ShouldQueue
                 'duration_seconds' => $duration,
                 'output_path' => $relativeOutput,
             ]);
+
+            $this->notifyUserJobCompleted($job->fresh() ?? $job);
             $this->broadcastJobSnapshot();
         } catch (\Throwable $e) {
             Log::error('[LegalLine] ProcessPdfJob: Job failed with exception', [
@@ -183,5 +185,28 @@ class ProcessPdfJob implements ShouldQueue
                 ? url("/api/job/{$job->id}/download")
                 : null,
         ]));
+    }
+
+    protected function notifyUserJobCompleted(PdfJob $job): void
+    {
+        if (! $job->user || $job->status !== 'completed') {
+            return;
+        }
+
+        try {
+            $downloadUrl = URL::temporarySignedRoute(
+                'jobs.download.signed',
+                now()->addHours(24),
+                ['id' => $job->id]
+            );
+
+            $job->user->notify(new PdfJobCompletedNotification($job, $downloadUrl));
+        } catch (\Throwable $e) {
+            Log::warning('[LegalLine] ProcessPdfJob: completion_email_failed', [
+                'job_id' => $job->id,
+                'user_id' => $job->user_id,
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 }

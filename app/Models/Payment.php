@@ -16,6 +16,7 @@ class Payment extends Model
     protected $fillable = [
         'amount',
         'currency',
+        'page_count',
         'user_id',
         'email',
         'phone',
@@ -30,6 +31,7 @@ class Payment extends Model
 
     protected $casts = [
         'amount' => 'decimal:2',
+        'page_count' => 'integer',
         'mpesa_callback_payload' => 'array',
     ];
 

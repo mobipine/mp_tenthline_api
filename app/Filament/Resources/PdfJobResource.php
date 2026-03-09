@@ -58,12 +58,17 @@ class PdfJobResource extends Resource
                     ->required()
                     ->numeric()
                     ->default(10),
+                Forms\Components\TextInput::make('page_count')
+                    ->required()
+                    ->numeric()
+                    ->default(0),
                 Forms\Components\TextInput::make('margin')
                     ->required(),
                 Forms\Components\TextInput::make('font_size_pt')
                     ->required()
                     ->numeric()
                     ->default(8),
+                Forms\Components\DateTimePicker::make('storage_deleted_at'),
             ]);
     }
 
@@ -100,12 +105,20 @@ class PdfJobResource extends Resource
                 Tables\Columns\TextColumn::make('line_interval')
                     ->numeric()
                     ->sortable(),
+                Tables\Columns\TextColumn::make('page_count')
+                    ->label('Pages')
+                    ->numeric()
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('margin')
                     ->searchable(),
                 Tables\Columns\TextColumn::make('font_size_pt')
                     ->numeric()
                     ->sortable(),
                 Tables\Columns\TextColumn::make('created_at')
+                    ->dateTime()
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
+                Tables\Columns\TextColumn::make('storage_deleted_at')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -121,6 +134,7 @@ class PdfJobResource extends Resource
                         'processing' => 'Processing',
                         'completed' => 'Completed',
                         'failed' => 'Failed',
+                        'deleted' => 'Deleted',
                     ]),
             ])
             ->actions([

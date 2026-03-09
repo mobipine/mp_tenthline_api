@@ -14,6 +14,8 @@ Route::get('config', [ConfigController::class, 'show']);
 Route::prefix('auth')->group(function () {
     Route::post('register', [AuthController::class, 'register']);
     Route::post('login', [AuthController::class, 'login']);
+    Route::post('request-otp', [AuthController::class, 'requestOtp'])->middleware('throttle:10,1');
+    Route::post('verify-otp', [AuthController::class, 'verifyOtp'])->middleware('throttle:30,1');
     Route::post('forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('reset-password', [AuthController::class, 'resetPassword']);
 });
@@ -24,11 +26,15 @@ Route::middleware('auth:sanctum')->prefix('auth')->group(function () {
 });
 
 Route::middleware('throttle:30,1')->group(function () {
+    Route::post('payments/quote', [PaymentController::class, 'quote']);
     Route::post('payments/initiate', [PaymentController::class, 'initiate']);
     Route::get('payments/{reference}/status', [PaymentController::class, 'status']);
 });
 
 Route::post('webhooks/mpesa', [MpesaWebhookController::class, 'handle']);
+Route::get('job/{id}/download/signed', [JobController::class, 'downloadSigned'])
+    ->middleware('signed')
+    ->name('jobs.download.signed');
 
 Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('upload', [UploadController::class, 'store']);

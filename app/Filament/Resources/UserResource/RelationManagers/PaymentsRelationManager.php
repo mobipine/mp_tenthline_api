@@ -23,6 +23,9 @@ class PaymentsRelationManager extends RelationManager
                     ->required(),
                 Forms\Components\TextInput::make('currency')
                     ->required(),
+                Forms\Components\TextInput::make('page_count')
+                    ->required()
+                    ->numeric(),
                 Forms\Components\TextInput::make('phone')
                     ->required(),
                 Forms\Components\TextInput::make('email')
@@ -51,6 +54,9 @@ class PaymentsRelationManager extends RelationManager
                     ->sortable(),
                 Tables\Columns\TextColumn::make('currency')
                     ->searchable(),
+                Tables\Columns\TextColumn::make('page_count')
+                    ->label('Pages')
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
                     ->searchable(),
@@ -76,4 +82,3 @@ class PaymentsRelationManager extends RelationManager
             ]);
     }
 }
-

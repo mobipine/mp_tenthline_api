@@ -41,6 +41,7 @@ class JobController extends Controller
             'total_pages' => $job->total_pages,
             'eta_seconds' => $job->eta_seconds,
             'error_message' => $job->error_message,
+            'storage_deleted_at' => optional($job->storage_deleted_at)->toIso8601String(),
         ];
 
         if ($job->status === 'completed' && $job->output_path) {
@@ -69,6 +70,10 @@ class JobController extends Controller
             'output_path' => $job->output_path,
         ]);
 
+        if ($job->status === 'deleted' || $job->storage_deleted_at) {
+            return response()->json(['message' => 'This file has been deleted after retention period.'], 410);
+        }
+
         if ($job->status !== 'completed' || ! $job->output_path) {
             Log::warning('[LegalLine] job.download.not_ready', ['job_id' => $job->id]);
             return response()->json(['message' => 'File not ready for download.'], 404);
@@ -91,6 +96,29 @@ class JobController extends Controller
         return Storage::disk('local')->download(
             $job->output_path,
             $filename,
+            ['Content-Type' => 'application/pdf']
+        );
+    }
+
+    public function downloadSigned(Request $request, string $id): StreamedResponse|JsonResponse
+    {
+        $job = PdfJob::findOrFail($id);
+
+        if ($job->status === 'deleted' || $job->storage_deleted_at) {
+            return response()->json(['message' => 'This file has been deleted after retention period.'], 410);
+        }
+
+        if ($job->status !== 'completed' || ! $job->output_path) {
+            return response()->json(['message' => 'File not ready for download.'], 404);
+        }
+
+        if (! Storage::disk('local')->exists($job->output_path)) {
+            return response()->json(['message' => 'File no longer available.'], 404);
+        }
+
+        return Storage::disk('local')->download(
+            $job->output_path,
+            'numbered-' . $job->filename,
             ['Content-Type' => 'application/pdf']
         );
     }
