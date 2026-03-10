@@ -105,7 +105,7 @@ class MpesaService
             'TransactionDesc' => 'LegalLine PDF processing',
         ];
 
-        Log::info('Initiating M-Pesa STK Push', json_encode($payload));
+        Log::info('Initiating M-Pesa STK Push', $payload);
 
         $response = Http::withToken($token)
             ->post($this->getStkPushUrl(), $payload);
