@@ -1,0 +1,80 @@
+name: Deploy TenthLine API
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-tenthline-api
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Deploy API to VPS
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SSH_PASSWORD:-}" ]; then
+            echo "Missing required secret: SSH_PASSWORD"
+            exit 1
+          fi
+
+          SSH_HOST="${SSH_HOST:-62.171.180.182}"
+          SSH_USER="${SSH_USER:-root}"
+          SSH_PORT="${SSH_PORT:-22}"
+
+          sshpass -p "${SSH_PASSWORD}" ssh -p "${SSH_PORT}" -o StrictHostKeyChecking=no "${SSH_USER}@${SSH_HOST}" << 'EOF'
+            set -euo pipefail
+
+            cd /var/www/tenthline-api
+
+            git fetch --all --prune
+            git pull --ff-only origin main
+
+            composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+            if [ -f package-lock.json ]; then
+              npm ci
+            else
+              npm install
+            fi
+
+            npm run build
+
+            php artisan migrate --force
+
+            if php artisan list --raw | grep -q '^permissions:seed$'; then
+              php artisan permissions:seed --force
+            fi
+
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+
+            if php artisan list --raw | grep -q '^horizon:terminate$'; then
+              php artisan horizon:terminate || true
+            else
+              php artisan queue:restart || true
+            fi
+
+            echo "API deployment complete."
+          EOF
