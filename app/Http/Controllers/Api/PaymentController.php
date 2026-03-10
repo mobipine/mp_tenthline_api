@@ -182,14 +182,14 @@ class PaymentController extends Controller
             ]);
         }
 
-        Log::info('[LegalLine] payment.status.response', [
-            'payment_id' => $payment->id,
-            'reference' => $payment->reference,
-            'status' => $payment->status,
-            'enable_payment' => $paymentsEnabled,
-            'simulation_mode' => ! $paymentsEnabled,
-            'elapsed_seconds' => $elapsedSeconds,
-        ]);
+        // Log::info('[LegalLine] payment.status.response', [
+        //     'payment_id' => $payment->id,
+        //     'reference' => $payment->reference,
+        //     'status' => $payment->status,
+        //     'enable_payment' => $paymentsEnabled,
+        //     'simulation_mode' => ! $paymentsEnabled,
+        //     'elapsed_seconds' => $elapsedSeconds,
+        // ]);
 
         return response()->json([
             'status' => $payment->status,
