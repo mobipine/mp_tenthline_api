@@ -28,6 +28,7 @@ class User extends Authenticatable implements FilamentUser
         'email',
         'phone',
         'password',
+        'price_per_page',
     ];
 
     /**
@@ -50,7 +51,18 @@ class User extends Authenticatable implements FilamentUser
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'price_per_page' => 'float',
         ];
+    }
+
+    /**
+     * Price per page for this user (billing). When null, app default 5 is used.
+     */
+    public function getEffectivePricePerPage(float $appDefault = 5.0): float
+    {
+        return $this->price_per_page !== null && $this->price_per_page > 0
+            ? (float) $this->price_per_page
+            : $appDefault;
     }
 
     public function payments(): HasMany

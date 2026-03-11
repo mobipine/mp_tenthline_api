@@ -112,7 +112,7 @@ class UploadController extends Controller
             'line_interval' => (int) $request->input('line_interval', 10),
             'page_count' => $pageCount,
             'total_pages' => $pageCount,
-            'margin' => $request->input('margin', 'left'),
+            'margin' => $request->input('margin', 'right'),
             'font_size_pt' => (int) $request->input('font_size_pt', 8),
         ]);
         $job->payment_id = $payment->id;

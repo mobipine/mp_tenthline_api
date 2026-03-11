@@ -45,7 +45,8 @@ class PaymentController extends Controller
             ], 422);
         }
 
-        $unitPrice = (float) $this->settings->price_per_page;
+        $user = auth('sanctum')->user();
+        $unitPrice = $user ? $user->getEffectivePricePerPage(5.0) : 5.0;
         $amount = round($unitPrice * $pageCount, 2);
 
         return response()->json([
@@ -67,12 +68,11 @@ class PaymentController extends Controller
         $phone = $this->normalizePhone($validated['phone']);
         $email = strtolower($validated['email']);
         $pageCount = (int) $validated['page_count'];
-        $unitPrice = (float) $this->settings->price_per_page;
+        [$user, $issuedToken, $createdByPayment] = $this->resolveUserForPayment($request, $email, $phone);
+        $unitPrice = $user->getEffectivePricePerPage(5.0);
         $amount = round($unitPrice * $pageCount, 2);
         $reference = Payment::generateReference();
         $paymentsEnabled = (bool) $this->settings->enable_payment;
-
-        [$user, $issuedToken, $createdByPayment] = $this->resolveUserForPayment($request, $email, $phone);
 
         Log::info('[LegalLine] payment.initiate.received', [
             'phone' => $phone,

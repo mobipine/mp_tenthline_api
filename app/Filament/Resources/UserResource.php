@@ -37,6 +37,12 @@ class UserResource extends Resource
                     ->tel()
                     ->maxLength(20)
                     ->placeholder('254712345678'),
+                Forms\Components\TextInput::make('price_per_page')
+                    ->numeric()
+                    ->minValue(0)
+                    ->step(0.01)
+                    ->default(5)
+                    ->helperText('Price per page for this user (billing). Default is 5 when empty.'),
                 Forms\Components\DateTimePicker::make('email_verified_at'),
                 Forms\Components\TextInput::make('password')
                     ->password()
@@ -68,6 +74,11 @@ class UserResource extends Resource
                     ->searchable(),
                 Tables\Columns\TextColumn::make('phone')
                     ->searchable(),
+                Tables\Columns\TextColumn::make('price_per_page')
+                    ->label('Price/page')
+                    ->numeric(decimalPlaces: 2)
+                    ->sortable()
+                    ->placeholder('5 (default)'),
                 Tables\Columns\TextColumn::make('roles.name')
                     ->label('Roles')
                     ->badge()
