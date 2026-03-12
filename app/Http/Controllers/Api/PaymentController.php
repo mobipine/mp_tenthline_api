@@ -37,7 +37,10 @@ class PaymentController extends Controller
 
         $pageCount = $this->pageCounter->countPages($file->getRealPath());
         if ($pageCount < 1) {
-            return response()->json(['message' => 'Could not read pages from this PDF.'], 422);
+            return response()->json([
+                'message' => 'This PDF appears damaged, corrupted, or unsupported. Please re-export or re-download it and try again.',
+                'code' => 'pdf_damaged',
+            ], 422);
         }
         if ($pageCount > $this->settings->max_pages) {
             return response()->json([
