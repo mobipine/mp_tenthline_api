@@ -56,13 +56,15 @@ class User extends Authenticatable implements FilamentUser
     }
 
     /**
-     * Price per page for this user (billing). When null, app default 5 is used.
+     * Price per page for this user (billing). When null, app default is used; 0 means free.
      */
     public function getEffectivePricePerPage(float $appDefault = 5.0): float
     {
-        return $this->price_per_page !== null && $this->price_per_page > 0
-            ? (float) $this->price_per_page
-            : $appDefault;
+        if ($this->price_per_page === null) {
+            return max(0.0, $appDefault);
+        }
+
+        return max(0.0, (float) $this->price_per_page);
     }
 
     public function payments(): HasMany

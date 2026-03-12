@@ -46,7 +46,10 @@ class PaymentController extends Controller
         }
 
         $user = auth('sanctum')->user();
-        $unitPrice = $user ? $user->getEffectivePricePerPage(5.0) : 5.0;
+        $defaultPricePerPage = max(0.0, (float) $this->settings->price_per_page);
+        $unitPrice = $user
+            ? $user->getEffectivePricePerPage($defaultPricePerPage)
+            : $defaultPricePerPage;
         $amount = round($unitPrice * $pageCount, 2);
 
         return response()->json([
@@ -69,10 +72,12 @@ class PaymentController extends Controller
         $email = strtolower($validated['email']);
         $pageCount = (int) $validated['page_count'];
         [$user, $issuedToken, $createdByPayment] = $this->resolveUserForPayment($request, $email, $phone);
-        $unitPrice = $user->getEffectivePricePerPage(5.0);
+        $defaultPricePerPage = max(0.0, (float) $this->settings->price_per_page);
+        $unitPrice = $user->getEffectivePricePerPage($defaultPricePerPage);
         $amount = round($unitPrice * $pageCount, 2);
         $reference = Payment::generateReference();
         $paymentsEnabled = (bool) $this->settings->enable_payment;
+        $zeroAmountCharge = $amount <= 0.0;
 
         Log::info('[LegalLine] payment.initiate.received', [
             'phone' => $phone,
@@ -104,7 +109,24 @@ class PaymentController extends Controller
             'user_id' => $user->id,
         ]);
 
-        if ($paymentsEnabled) {
+        if ($zeroAmountCharge) {
+            $payment->update([
+                'status' => 'completed',
+                'mpesa_result_code' => '0',
+                'mpesa_callback_payload' => [
+                    'simulated' => true,
+                    'mode' => 'zero_amount_auto_completed',
+                    'completed_at' => now()->toIso8601String(),
+                ],
+            ]);
+            $payment->refresh();
+
+            Log::info('[LegalLine] payment.initiate.zero_amount_auto_completed', [
+                'payment_id' => $payment->id,
+                'reference' => $reference,
+                'user_id' => $user->id,
+            ]);
+        } elseif ($paymentsEnabled) {
             $result = $this->mpesa->stkPush($phone, $amount, $reference, $payment->id);
             Log::info('[LegalLine] payment.initiate.stk_response', [
                 'payment_id' => $payment->id,
@@ -128,7 +150,7 @@ class PaymentController extends Controller
         return response()->json([
             'payment_id' => $payment->id,
             'reference' => $reference,
-            'message' => 'Complete payment on your phone.',
+            'message' => $zeroAmountCharge ? 'No payment required. Proceeding to upload.' : 'Complete payment on your phone.',
             'created_account' => $createdByPayment,
             'auth_token' => $issuedToken,
             'user' => $this->serializeUser($user),
@@ -158,7 +180,24 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (
+        if ($payment->status === 'pending' && (float) $payment->amount <= 0.0) {
+            $payment->update([
+                'status' => 'completed',
+                'mpesa_result_code' => '0',
+                'mpesa_callback_payload' => [
+                    'simulated' => true,
+                    'mode' => 'zero_amount_auto_completed',
+                    'completed_at' => now()->toIso8601String(),
+                ],
+            ]);
+            $payment->refresh();
+
+            Log::info('[LegalLine] payment.status.zero_amount_auto_completed', [
+                'payment_id' => $payment->id,
+                'reference' => $payment->reference,
+                'user_id' => $payment->user_id,
+            ]);
+        } elseif (
             ! $paymentsEnabled
             && $payment->status === 'pending'
             && $elapsedSeconds !== null
