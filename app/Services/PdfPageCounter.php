@@ -20,9 +20,9 @@ class PdfPageCounter
             return $pageCount;
         }
 
-        $pageCount = $this->countWithSmalotParser($filePath);
+        $pageCount = $this->countWithPdfInfo($filePath);
         if ($pageCount > 0) {
-            Log::info('[LegalLine] PDF page count resolved with Smalot parser fallback', [
+            Log::info('[LegalLine] PDF page count resolved with pdfinfo fallback', [
                 'file' => $filePath,
                 'page_count' => $pageCount,
             ]);
@@ -30,9 +30,9 @@ class PdfPageCounter
             return $pageCount;
         }
 
-        $pageCount = $this->countWithPdfInfo($filePath);
+        $pageCount = $this->countWithSmalotParser($filePath);
         if ($pageCount > 0) {
-            Log::info('[LegalLine] PDF page count resolved with pdfinfo fallback', [
+            Log::info('[LegalLine] PDF page count resolved with Smalot parser fallback', [
                 'file' => $filePath,
                 'page_count' => $pageCount,
             ]);

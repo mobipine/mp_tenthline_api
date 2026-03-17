@@ -26,7 +26,8 @@ class PdfLineNumberService
     private const LINE_HEIGHT_PT = 24;
 
     public function __construct(
-        private readonly PdfLineExtractor $lineExtractor
+        private readonly PdfLineExtractor $lineExtractor,
+        private readonly PdfFpdiCompatibilityService $fpdiCompatibility
     ) {}
 
     /**
@@ -64,116 +65,131 @@ class PdfLineNumberService
             'debug_overlay' => $drawDebugOverlay,
         ]);
 
-        $lineAnchorsPerPage = $this->lineExtractor->getLineAnchorsPerPage($inputPath);
-        $extractorDiagnostics = $this->lineExtractor->getLastDiagnostics();
-
-        // Use points so coordinates match (extractor and FPDI both in pt)
-        $pdf = new Fpdi('P', 'pt');
-        $pageCount = $pdf->setSourceFile($inputPath);
-        Log::debug('[LegalLine] PdfLineNumberService: source opened', ['page_count' => $pageCount]);
-
-        $fallbackPages = 0;
-        $totalLabelsDrawn = 0;
-
-        for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
-            $templateId = $pdf->importPage($pageNo);
-            $size = $pdf->getTemplateSize($templateId);
-            $pdf->AddPage($size['orientation'] ?? 'P', [$size['width'], $size['height']]);
-            $pdf->useTemplate($templateId);
-
-            $pdf->SetFont('Helvetica', '', $fontSizePt);
-            $pdf->SetTextColor(80, 80, 80);
-
-            $pageWidth = $size['width'];
-            $pageHeight = $size['height'];
-
-            $lineAnchors = $lineAnchorsPerPage[$pageNo] ?? [];
-            $labelsDrawn = 0;
-
-            if ($lineAnchors !== []) {
-                // Real lines: place number at every 10th, 20th, 30th… detected line anchor.
-                foreach ($this->everyNthLineWithLabel($lineAnchors, $lineInterval) as $lineNumber => $lineAnchor) {
-                    $displayLabel = '-' . $lineNumber;
-                    $yFromTop = $pageHeight - $lineAnchor['y']; // FPDI top-left coords, baseline-preserving via Text()
-                    $x = $this->resolveLabelX(
-                        $displayLabel,
-                        $fontSizePt,
-                        $margin,
-                        $pageWidth,
-                        $lineInsetPt,
-                        $pageEdgePaddingPt,
-                        $labelWidthFactor
-                    );
-
-                    $pdf->Text($x, $yFromTop, $displayLabel);
-
-                    if ($drawDebugOverlay) {
-                        $this->drawDebugOverlay($pdf, $pageHeight, $lineAnchor, $x);
-                    }
-
-                    $labelsDrawn++;
-                }
-            } else {
-                $fallbackPages++;
-                // Fallback: fixed grid when no lines detected (e.g. image-only page)
-                $usableHeight = $pageHeight - self::TOP_MARGIN_PT - self::BOTTOM_MARGIN_PT;
-                $totalGridLines = (int) floor($usableHeight / self::LINE_HEIGHT_PT);
-                for ($lineNumber = $lineInterval; $lineNumber <= $totalGridLines; $lineNumber += $lineInterval) {
-                    $yFromTop = self::TOP_MARGIN_PT + ($lineNumber * self::LINE_HEIGHT_PT);
-                    $displayLabel = '-' . $lineNumber;
-                    $x = $this->resolveLabelX(
-                        $displayLabel,
-                        $fontSizePt,
-                        $margin,
-                        $pageWidth,
-                        $lineInsetPt,
-                        $pageEdgePaddingPt,
-                        $labelWidthFactor
-                    );
-                    $pdf->Text($x, $yFromTop, $displayLabel);
-
-                    if ($drawDebugOverlay) {
-                        $this->drawFallbackDebugOverlay($pdf, $x, $yFromTop);
-                    }
-
-                    $labelsDrawn++;
-                }
-            }
-
-            $totalLabelsDrawn += $labelsDrawn;
-            $pageDiagnostics = is_array($extractorDiagnostics['pages'] ?? null)
-                ? ($extractorDiagnostics['pages'][$pageNo] ?? null)
-                : null;
-
-            Log::debug('[LegalLine] PdfLineNumberService: page processed', [
-                'page' => $pageNo,
-                'total_pages' => $pageCount,
-                'lines_on_page' => count($lineAnchors),
-                'labels_drawn' => $labelsDrawn,
-                'page_size_pt' => ['width' => $pageWidth, 'height' => $pageHeight],
-                'extractor_page_diagnostics' => $diagnosticsEnabled ? $pageDiagnostics : null,
-            ]);
-
-            if ($onPageProcessed !== null) {
-                $onPageProcessed($pageNo, $pageCount);
-            }
+        $compatibleSource = $this->fpdiCompatibility->resolveProcessablePath($inputPath);
+        if (! $compatibleSource['processable']) {
+            throw new \RuntimeException($compatibleSource['message'] ?? $this->fpdiCompatibility->unsupportedMessage());
         }
 
-        $pdf->Output('F', $outputPath);
-        Log::info('[LegalLine] PdfLineNumberService: output written', [
-            'output_path' => $outputPath,
-            'total_pages' => $pageCount,
-            'total_labels_drawn' => $totalLabelsDrawn,
-            'fallback_pages' => $fallbackPages,
-            'fallback_usage_rate' => $pageCount > 0 ? round($fallbackPages / $pageCount, 4) : 0.0,
-            'extractor_summary' => $diagnosticsEnabled ? [
-                'engine_preference' => $extractorDiagnostics['engine_preference'] ?? null,
-                'engine_used' => $extractorDiagnostics['engine_used'] ?? null,
-                'total_lines_detected' => $extractorDiagnostics['total_lines_detected'] ?? null,
-            ] : null,
-        ]);
+        $effectiveInputPath = $compatibleSource['path'];
 
-        return $pageCount;
+        try {
+            $lineAnchorsPerPage = $this->lineExtractor->getLineAnchorsPerPage($effectiveInputPath);
+            $extractorDiagnostics = $this->lineExtractor->getLastDiagnostics();
+
+            // Use points so coordinates match (extractor and FPDI both in pt)
+            $pdf = new Fpdi('P', 'pt');
+            $pageCount = $pdf->setSourceFile($effectiveInputPath);
+            Log::debug('[LegalLine] PdfLineNumberService: source opened', [
+                'page_count' => $pageCount,
+                'normalized_input' => $compatibleSource['normalized'],
+            ]);
+
+            $fallbackPages = 0;
+            $totalLabelsDrawn = 0;
+
+            for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
+                $templateId = $pdf->importPage($pageNo);
+                $size = $pdf->getTemplateSize($templateId);
+                $pdf->AddPage($size['orientation'] ?? 'P', [$size['width'], $size['height']]);
+                $pdf->useTemplate($templateId);
+
+                $pdf->SetFont('Helvetica', '', $fontSizePt);
+                $pdf->SetTextColor(80, 80, 80);
+
+                $pageWidth = $size['width'];
+                $pageHeight = $size['height'];
+
+                $lineAnchors = $lineAnchorsPerPage[$pageNo] ?? [];
+                $labelsDrawn = 0;
+
+                if ($lineAnchors !== []) {
+                    // Real lines: place number at every 10th, 20th, 30th… detected line anchor.
+                    foreach ($this->everyNthLineWithLabel($lineAnchors, $lineInterval) as $lineNumber => $lineAnchor) {
+                        $displayLabel = '-' . $lineNumber;
+                        $yFromTop = $pageHeight - $lineAnchor['y']; // FPDI top-left coords, baseline-preserving via Text()
+                        $x = $this->resolveLabelX(
+                            $displayLabel,
+                            $fontSizePt,
+                            $margin,
+                            $pageWidth,
+                            $lineInsetPt,
+                            $pageEdgePaddingPt,
+                            $labelWidthFactor
+                        );
+
+                        $pdf->Text($x, $yFromTop, $displayLabel);
+
+                        if ($drawDebugOverlay) {
+                            $this->drawDebugOverlay($pdf, $pageHeight, $lineAnchor, $x);
+                        }
+
+                        $labelsDrawn++;
+                    }
+                } else {
+                    $fallbackPages++;
+                    // Fallback: fixed grid when no lines detected (e.g. image-only page)
+                    $usableHeight = $pageHeight - self::TOP_MARGIN_PT - self::BOTTOM_MARGIN_PT;
+                    $totalGridLines = (int) floor($usableHeight / self::LINE_HEIGHT_PT);
+                    for ($lineNumber = $lineInterval; $lineNumber <= $totalGridLines; $lineNumber += $lineInterval) {
+                        $yFromTop = self::TOP_MARGIN_PT + ($lineNumber * self::LINE_HEIGHT_PT);
+                        $displayLabel = '-' . $lineNumber;
+                        $x = $this->resolveLabelX(
+                            $displayLabel,
+                            $fontSizePt,
+                            $margin,
+                            $pageWidth,
+                            $lineInsetPt,
+                            $pageEdgePaddingPt,
+                            $labelWidthFactor
+                        );
+                        $pdf->Text($x, $yFromTop, $displayLabel);
+
+                        if ($drawDebugOverlay) {
+                            $this->drawFallbackDebugOverlay($pdf, $x, $yFromTop);
+                        }
+
+                        $labelsDrawn++;
+                    }
+                }
+
+                $totalLabelsDrawn += $labelsDrawn;
+                $pageDiagnostics = is_array($extractorDiagnostics['pages'] ?? null)
+                    ? ($extractorDiagnostics['pages'][$pageNo] ?? null)
+                    : null;
+
+                Log::debug('[LegalLine] PdfLineNumberService: page processed', [
+                    'page' => $pageNo,
+                    'total_pages' => $pageCount,
+                    'lines_on_page' => count($lineAnchors),
+                    'labels_drawn' => $labelsDrawn,
+                    'page_size_pt' => ['width' => $pageWidth, 'height' => $pageHeight],
+                    'extractor_page_diagnostics' => $diagnosticsEnabled ? $pageDiagnostics : null,
+                ]);
+
+                if ($onPageProcessed !== null) {
+                    $onPageProcessed($pageNo, $pageCount);
+                }
+            }
+
+            $pdf->Output('F', $outputPath);
+            Log::info('[LegalLine] PdfLineNumberService: output written', [
+                'output_path' => $outputPath,
+                'total_pages' => $pageCount,
+                'total_labels_drawn' => $totalLabelsDrawn,
+                'fallback_pages' => $fallbackPages,
+                'fallback_usage_rate' => $pageCount > 0 ? round($fallbackPages / $pageCount, 4) : 0.0,
+                'normalized_input' => $compatibleSource['normalized'],
+                'extractor_summary' => $diagnosticsEnabled ? [
+                    'engine_preference' => $extractorDiagnostics['engine_preference'] ?? null,
+                    'engine_used' => $extractorDiagnostics['engine_used'] ?? null,
+                    'total_lines_detected' => $extractorDiagnostics['total_lines_detected'] ?? null,
+                ] : null,
+            ]);
+
+            return $pageCount;
+        } finally {
+            $this->fpdiCompatibility->cleanup($compatibleSource['temporary_path']);
+        }
     }
 
     /**

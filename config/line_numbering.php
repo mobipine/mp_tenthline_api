@@ -26,6 +26,7 @@ return [
     |--------------------------------------------------------------------------
     */
     'poppler_binary' => env('PDF_LINE_POPPLER_BINARY', 'pdftotext'),
+    'qpdf_binary' => env('PDF_LINE_QPDF_BINARY', 'qpdf'),
     'poppler_baseline_ratio' => (float) env('PDF_LINE_POPPLER_BASELINE_RATIO', 0.78),
 
     /*

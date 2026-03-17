@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\User;
 use App\Notifications\Auth\WelcomeCustomerNotification;
 use App\Settings\AppSettings;
+use App\Services\PdfFpdiCompatibilityService;
 use App\Services\MpesaService;
 use App\Services\PdfPageCounter;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -21,7 +22,8 @@ class PaymentController extends Controller
     public function __construct(
         protected AppSettings $settings,
         protected MpesaService $mpesa,
-        protected PdfPageCounter $pageCounter
+        protected PdfPageCounter $pageCounter,
+        protected PdfFpdiCompatibilityService $fpdiCompatibility
     ) {}
 
     public function quote(Request $request): JsonResponse
@@ -46,6 +48,18 @@ class PaymentController extends Controller
             return response()->json([
                 'message' => "This PDF has {$pageCount} pages. Max allowed is {$this->settings->max_pages}.",
             ], 422);
+        }
+
+        $compatibility = $this->fpdiCompatibility->resolveProcessablePath($file->getRealPath());
+        try {
+            if (! $compatibility['processable']) {
+                return response()->json([
+                    'message' => $compatibility['message'] ?? $this->fpdiCompatibility->unsupportedMessage(),
+                    'code' => 'pdf_processing_unsupported',
+                ], 422);
+            }
+        } finally {
+            $this->fpdiCompatibility->cleanup($compatibility['temporary_path']);
         }
 
         $user = auth('sanctum')->user();

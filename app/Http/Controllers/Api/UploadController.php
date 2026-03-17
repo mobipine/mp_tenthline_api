@@ -7,6 +7,7 @@ use App\Jobs\ProcessPdfJob;
 use App\Models\Payment;
 use App\Models\PdfJob;
 use App\Settings\AppSettings;
+use App\Services\PdfFpdiCompatibilityService;
 use App\Services\PdfPageCounter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,7 +17,8 @@ use Illuminate\Support\Facades\Storage;
 class UploadController extends Controller
 {
     public function __construct(
-        protected PdfPageCounter $pageCounter
+        protected PdfPageCounter $pageCounter,
+        protected PdfFpdiCompatibilityService $fpdiCompatibility
     ) {}
 
     public function store(Request $request, AppSettings $settings): JsonResponse
@@ -63,6 +65,18 @@ class UploadController extends Controller
             return response()->json([
                 'message' => "This PDF has {$pageCount} pages. Max allowed is {$settings->max_pages}.",
             ], 422);
+        }
+
+        $compatibility = $this->fpdiCompatibility->resolveProcessablePath($file->getRealPath());
+        try {
+            if (! $compatibility['processable']) {
+                return response()->json([
+                    'message' => $compatibility['message'] ?? $this->fpdiCompatibility->unsupportedMessage(),
+                    'code' => 'pdf_processing_unsupported',
+                ], 422);
+            }
+        } finally {
+            $this->fpdiCompatibility->cleanup($compatibility['temporary_path']);
         }
 
         $defaultPricePerPage = max(0.0, (float) $settings->price_per_page);

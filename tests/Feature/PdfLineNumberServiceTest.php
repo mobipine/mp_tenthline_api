@@ -76,6 +76,48 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
+    public function test_it_numbers_qpdf_normalized_pdfs_that_fpdi_cannot_open_directly(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        if (! $this->commandExists('qpdf')) {
+            $this->markTestSkipped('qpdf command not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+        ]);
+
+        $basePath = sys_get_temp_dir() . '/legalline_test_service_input_qpdf_base_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_qpdf_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_qpdf_' . uniqid() . '.pdf';
+        $this->createSamplePdf($basePath, 28);
+        $this->createObjectStreamPdf($basePath, $inputPath);
+
+        $this->assertFalse($this->canOpenWithFpdi($inputPath));
+
+        $service = app(PdfLineNumberService::class);
+        $pageCount = $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $this->assertSame(1, $pageCount);
+        $this->assertFileExists($outputPath);
+        $this->assertGreaterThan(0, filesize($outputPath) ?: 0);
+
+        $text = shell_exec(sprintf('pdftotext %s - 2>/dev/null', escapeshellarg($outputPath)));
+        $text = is_string($text) ? $text : '';
+
+        $this->assertStringContainsString('-10', $text);
+        $this->assertStringContainsString('-20', $text);
+
+        @unlink($basePath);
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
     private function createSamplePdf(string $path, int $lineCount): void
     {
         $pdf = new Fpdi('P', 'pt');
@@ -152,5 +194,41 @@ class PdfLineNumberServiceTest extends TestCase
         $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
 
         return is_string($path) && trim($path) !== '';
+    }
+
+    private function createObjectStreamPdf(string $inputPath, string $outputPath): void
+    {
+        $command = sprintf(
+            '%s %s --object-streams=generate %s 2>&1',
+            escapeshellcmd($this->commandPath('qpdf')),
+            escapeshellarg($inputPath),
+            escapeshellarg($outputPath)
+        );
+
+        $output = [];
+        $exitCode = 0;
+        exec($command, $output, $exitCode);
+
+        $this->assertSame(0, $exitCode, implode("\n", $output));
+        $this->assertFileExists($outputPath);
+    }
+
+    private function canOpenWithFpdi(string $path): bool
+    {
+        try {
+            $pdf = new Fpdi('P', 'pt');
+            $pdf->setSourceFile($path);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function commandPath(string $command): string
+    {
+        $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
+
+        return is_string($path) ? trim($path) : '';
     }
 }
