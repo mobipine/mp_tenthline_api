@@ -3,32 +3,41 @@
 namespace Tests\Unit;
 
 use App\Services\PdfLineExtractor;
-use setasign\Fpdi\Fpdi;
+use Tests\Concerns\CreatesLineNumberingPdfs;
 use Tests\TestCase;
 
 class PdfLineExtractorTest extends TestCase
 {
-    public function test_it_extracts_line_anchors_with_poppler_engine(): void
+    use CreatesLineNumberingPdfs;
+
+    public function test_it_extracts_trusted_body_lines_and_suppresses_repeated_headers_and_footers(): void
     {
         if (! $this->commandExists('pdftotext')) {
             $this->markTestSkipped('pdftotext command not available on this machine.');
         }
 
-        config(['line_numbering.extractor_engine' => 'poppler']);
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.enable_ocr_fallback' => false,
+        ]);
 
         $inputPath = sys_get_temp_dir() . '/legalline_test_extractor_' . uniqid() . '.pdf';
-        $this->createSamplePdf($inputPath, 26);
+        $this->createPdf($inputPath, [
+            $this->legalPage($this->bodyLines('P1', 20), 'Case No. 100 of 2026', 'Advocates for the Plaintiff', 1),
+            $this->legalPage($this->bodyLines('P2', 20), 'Case No. 101 of 2026', 'Advocates for the Plaintiff', 2),
+        ]);
 
         $extractor = app(PdfLineExtractor::class);
         $anchorsPerPage = $extractor->getLineAnchorsPerPage($inputPath);
         $diagnostics = $extractor->getLastDiagnostics();
 
-        $this->assertNotEmpty($anchorsPerPage);
-        $this->assertArrayHasKey(1, $anchorsPerPage);
-        $this->assertGreaterThanOrEqual(20, count($anchorsPerPage[1]));
         $this->assertSame('poppler', $diagnostics['engine_used']);
+        $this->assertCount(20, $anchorsPerPage[1]);
+        $this->assertCount(20, $anchorsPerPage[2]);
+        $this->assertGreaterThanOrEqual(1, $diagnostics['pages'][1]['suppressed_headers']);
+        $this->assertGreaterThanOrEqual(1, $diagnostics['pages'][1]['suppressed_footers']);
+        $this->assertGreaterThan(0.58, $diagnostics['pages'][1]['page_confidence']);
 
-        // Lines should be ordered top-to-bottom by Y in PDF coordinates.
         $first = $anchorsPerPage[1][0]['y'] ?? 0.0;
         $last = $anchorsPerPage[1][count($anchorsPerPage[1]) - 1]['y'] ?? 0.0;
         $this->assertGreaterThan($last, $first);
@@ -36,24 +45,17 @@ class PdfLineExtractorTest extends TestCase
         @unlink($inputPath);
     }
 
-    private function createSamplePdf(string $path, int $lineCount): void
+    /**
+     * @return list<string>
+     */
+    private function bodyLines(string $prefix, int $count): array
     {
-        $pdf = new Fpdi('P', 'pt');
-        $pdf->AddPage();
-        $pdf->SetFont('Helvetica', '', 12);
+        $lines = [];
 
-        for ($line = 1; $line <= $lineCount; $line++) {
-            $y = 72 + ($line * 20);
-            $pdf->Text(72, $y, "Sample line {$line} text for extraction");
+        for ($line = 1; $line <= $count; $line++) {
+            $lines[] = sprintf('%sL%02d body text for extraction', $prefix, $line);
         }
 
-        $pdf->Output('F', $path);
-    }
-
-    private function commandExists(string $command): bool
-    {
-        $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
-
-        return is_string($path) && trim($path) !== '';
+        return $lines;
     }
 }

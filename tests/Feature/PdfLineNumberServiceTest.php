@@ -4,10 +4,13 @@ namespace Tests\Feature;
 
 use App\Services\PdfLineNumberService;
 use setasign\Fpdi\Fpdi;
+use Tests\Concerns\CreatesLineNumberingPdfs;
 use Tests\TestCase;
 
 class PdfLineNumberServiceTest extends TestCase
 {
+    use CreatesLineNumberingPdfs;
+
     public function test_it_places_numbering_on_right_margin_when_right_selected(): void
     {
         if (! $this->commandExists('pdftotext')) {
@@ -18,6 +21,7 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.extractor_engine' => 'poppler',
             'line_numbering.debug_overlay' => false,
             'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
         ]);
 
         $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_right_' . uniqid() . '.pdf';
@@ -52,6 +56,7 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.extractor_engine' => 'poppler',
             'line_numbering.debug_overlay' => false,
             'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
         ]);
 
         $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_left_' . uniqid() . '.pdf';
@@ -76,6 +81,85 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
+    public function test_it_aligns_labels_with_body_lines_even_when_headers_and_footers_repeat(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_headers_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_headers_' . uniqid() . '.pdf';
+
+        $this->createPdf($inputPath, [
+            $this->legalPage($this->bodyLines('P1', 20), 'Case No. 100 of 2026', 'Advocates for the Plaintiff', 1),
+            $this->legalPage($this->bodyLines('P2', 20), 'Case No. 101 of 2026', 'Advocates for the Plaintiff', 2),
+        ]);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $bboxXml = $this->bboxXml($outputPath);
+        $label10 = $this->findWordBox($bboxXml, 1, '-10');
+        $line10 = $this->findWordBox($bboxXml, 1, 'P1L10');
+        $label20 = $this->findWordBox($bboxXml, 1, '-20');
+        $line20 = $this->findWordBox($bboxXml, 1, 'P1L20');
+
+        $this->assertNotNull($label10);
+        $this->assertNotNull($line10);
+        $this->assertNotNull($label20);
+        $this->assertNotNull($line20);
+        $this->assertLessThanOrEqual(7.0, abs($this->wordMidY($label10) - $this->wordMidY($line10)));
+        $this->assertLessThanOrEqual(7.0, abs($this->wordMidY($label20) - $this->wordMidY($line20)));
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
+    public function test_it_preserves_short_body_lines_in_the_count(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_short_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_short_' . uniqid() . '.pdf';
+
+        $bodyLines = $this->bodyLines('SHORT', 20);
+        $bodyLines[9] = 'SHORT10';
+        $this->createPdf($inputPath, [
+            $this->legalPage($bodyLines, 'Case No. 100 of 2026', 'Advocates for the Plaintiff', 1),
+            $this->legalPage($this->bodyLines('REF', 20), 'Case No. 101 of 2026', 'Advocates for the Plaintiff', 2),
+        ]);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'left', 8);
+
+        $bboxXml = $this->bboxXml($outputPath);
+        $label10 = $this->findWordBox($bboxXml, 1, '-10');
+        $shortLine = $this->findWordBox($bboxXml, 1, 'SHORT10');
+
+        $this->assertNotNull($label10);
+        $this->assertNotNull($shortLine);
+        $this->assertLessThanOrEqual(7.0, abs($this->wordMidY($label10) - $this->wordMidY($shortLine)));
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
     public function test_it_numbers_qpdf_normalized_pdfs_that_fpdi_cannot_open_directly(): void
     {
         if (! $this->commandExists('pdftotext')) {
@@ -90,6 +174,7 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.extractor_engine' => 'poppler',
             'line_numbering.debug_overlay' => false,
             'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
         ]);
 
         $basePath = sys_get_temp_dir() . '/legalline_test_service_input_qpdf_base_' . uniqid() . '.pdf';
@@ -118,6 +203,63 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
+    public function test_it_can_use_ocr_fallback_for_image_only_pages(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        if (! $this->commandExists('tesseract') || ! $this->commandExists('pdftoppm')) {
+            $this->markTestSkipped('OCR commands are not available on this machine.');
+        }
+
+        if (! function_exists('imagecreatetruecolor') || ! function_exists('imagettftext')) {
+            $this->markTestSkipped('GD with TrueType font support is not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => true,
+            'line_numbering.ocr_trigger_page_confidence' => 0.95,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_ocr_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_ocr_' . uniqid() . '.pdf';
+        $this->createImageOnlyPdf($inputPath, $this->bodyLines('OCR', 20));
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageDiagnostics = $diagnostics['pages'][1]['diagnostics'] ?? [];
+        $text = shell_exec(sprintf('pdftotext %s - 2>/dev/null', escapeshellarg($outputPath)));
+        $text = is_string($text) ? $text : '';
+
+        $this->assertSame('ocr', $pageDiagnostics['engine'] ?? null);
+        $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
+        $this->assertGreaterThanOrEqual(2, (int) ($diagnostics['pages'][1]['labels_drawn'] ?? 0));
+        $this->assertStringContainsString('-10', $text);
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function bodyLines(string $prefix, int $count): array
+    {
+        $lines = [];
+
+        for ($line = 1; $line <= $count; $line++) {
+            $lines[] = sprintf('%sL%02d body content', $prefix, $line);
+        }
+
+        return $lines;
+    }
+
     private function createSamplePdf(string $path, int $lineCount): void
     {
         $pdf = new Fpdi('P', 'pt');
@@ -132,16 +274,46 @@ class PdfLineNumberServiceTest extends TestCase
         $pdf->Output('F', $path);
     }
 
+    /**
+     * @param  list<string>  $lines
+     */
+    private function createImageOnlyPdf(string $path, array $lines): void
+    {
+        $imagePath = sys_get_temp_dir() . '/legalline_test_service_image_' . uniqid() . '.png';
+        $image = imagecreatetruecolor(1275, 1650);
+        $white = imagecolorallocate($image, 255, 255, 255);
+        $black = imagecolorallocate($image, 0, 0, 0);
+        imagefill($image, 0, 0, $white);
+
+        $fontPath = '/System/Library/Fonts/Supplemental/Arial.ttf';
+        $y = 140;
+        foreach ($lines as $line) {
+            imagettftext($image, 30, 0, 120, $y, $black, $fontPath, $line);
+            $y += 62;
+        }
+
+        imagepng($image, $imagePath);
+        imagedestroy($image);
+
+        $pdf = new Fpdi('P', 'pt');
+        $pdf->AddPage('P', [612.0, 792.0]);
+        $pdf->Image($imagePath, 0, 0, 612.0, 792.0, 'PNG');
+        $pdf->Output('F', $path);
+
+        @unlink($imagePath);
+    }
+
     private function assertLabelNearMargin(string $pdfPath, string $margin): void
     {
-        $bboxXml = shell_exec(sprintf('pdftotext -bbox-layout -enc UTF-8 %s - 2>/dev/null', escapeshellarg($pdfPath)));
-        $bboxXml = is_string($bboxXml) ? $bboxXml : '';
+        $bboxXml = $this->bboxXml($pdfPath);
         $this->assertNotSame('', trim($bboxXml), 'Could not extract bbox XML from generated PDF.');
 
-        $pageWidth = $this->extractPageWidth($bboxXml);
-        $this->assertGreaterThan(0.0, $pageWidth, 'Could not parse page width from bbox XML.');
+        if (preg_match('/<page[^>]*\\bwidth="([0-9.]+)"/i', $bboxXml, $match) !== 1) {
+            $this->fail('Could not parse page width from bbox XML.');
+        }
 
-        $labelBox = $this->extractWordBox($bboxXml, '-10');
+        $pageWidth = (float) $match[1];
+        $labelBox = $this->findWordBox($bboxXml, 1, '-10');
         $this->assertNotNull($labelBox, 'Could not find "-10" label bbox in output PDF.');
 
         if ($margin === 'right') {
@@ -159,41 +331,6 @@ class PdfLineNumberServiceTest extends TestCase
             $labelBox['xMin'],
             'Left-margin label is not close enough to the left page edge.'
         );
-    }
-
-    private function extractPageWidth(string $bboxXml): float
-    {
-        if (preg_match('/<page[^>]*\\bwidth="([0-9.]+)"/i', $bboxXml, $match) !== 1) {
-            return 0.0;
-        }
-
-        return (float) $match[1];
-    }
-
-    /**
-     * @return array{xMin: float, xMax: float}|null
-     */
-    private function extractWordBox(string $bboxXml, string $word): ?array
-    {
-        $pattern = '/<word\\s+[^>]*xMin="([0-9.]+)"[^>]*xMax="([0-9.]+)"[^>]*>'
-            . preg_quote($word, '/')
-            . '<\\/word>/u';
-
-        if (preg_match($pattern, $bboxXml, $match) !== 1) {
-            return null;
-        }
-
-        return [
-            'xMin' => (float) $match[1],
-            'xMax' => (float) $match[2],
-        ];
-    }
-
-    private function commandExists(string $command): bool
-    {
-        $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
-
-        return is_string($path) && trim($path) !== '';
     }
 
     private function createObjectStreamPdf(string $inputPath, string $outputPath): void
@@ -223,12 +360,5 @@ class PdfLineNumberServiceTest extends TestCase
         } catch (\Throwable) {
             return false;
         }
-    }
-
-    private function commandPath(string $command): string
-    {
-        $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
-
-        return is_string($path) ? trim($path) : '';
     }
 }
