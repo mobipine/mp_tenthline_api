@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Scanned\TextractJobCoordinator;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Smalot\PdfParser\Config;
@@ -19,18 +20,22 @@ class PdfLineExtractor
     /** @var array<string, mixed> */
     private array $lastDiagnostics = [];
 
+    /** @var array<string, array<int, array<string, mixed>>> */
+    private array $pageImageMetricsCache = [];
+
     public function __construct(
         private readonly PdfPageLayoutAnalyzer $pageLayoutAnalyzer,
         private readonly PdfRepeatedArtifactDetector $repeatedArtifactDetector,
         private readonly PdfLineConfidenceScorer $confidenceScorer,
         private readonly PdfOcrLineGridBuilder $ocrLineGridBuilder,
-        private readonly PdfScannedPageClassifier $scannedPageClassifier
+        private readonly PdfScannedPageClassifier $scannedPageClassifier,
+        private readonly TextractJobCoordinator $textractJobCoordinator
     ) {}
 
     /**
      * @return array<int, array<int, array{y: float, x_start: float, x_end: float}>>
      */
-    public function getLineAnchorsPerPage(string $inputPath): array
+    public function getLineAnchorsPerPage(string $inputPath, array $context = []): array
     {
         $enginePreference = strtolower((string) config('line_numbering.extractor_engine', 'auto'));
         $this->lastDiagnostics = [
@@ -40,12 +45,21 @@ class PdfLineExtractor
             'pages' => [],
             'total_lines_detected' => 0,
             'input_path' => $inputPath,
+            'ocr' => [
+                'enabled' => $this->ocrFallbackEnabled(),
+                'candidate_pages' => [],
+                'pages_replaced' => [],
+                'providers_attempted' => [],
+                'providers_used' => [],
+                'textract' => null,
+                'local' => null,
+            ],
         ];
 
         $lineAnchorsPerPage = [];
 
         if (in_array($enginePreference, ['auto', 'poppler'], true)) {
-            $poppler = $this->extractUsingPoppler($inputPath);
+            $poppler = $this->extractUsingPoppler($inputPath, $context);
             if ($poppler['success']) {
                 $lineAnchorsPerPage = $poppler['anchors_per_page'];
                 $this->lastDiagnostics['engine_used'] = 'poppler';
@@ -61,7 +75,7 @@ class PdfLineExtractor
         }
 
         if ($lineAnchorsPerPage === []) {
-            $smalot = $this->extractUsingSmalot($inputPath);
+            $smalot = $this->extractUsingSmalot($inputPath, $context);
             $lineAnchorsPerPage = $smalot['anchors_per_page'];
             $this->lastDiagnostics['engine_used'] = 'smalot';
             $this->lastDiagnostics['pages'] = $smalot['page_diagnostics'];
@@ -77,6 +91,7 @@ class PdfLineExtractor
             'pages_with_data' => count($lineAnchorsPerPage),
             'total_lines_detected' => $this->lastDiagnostics['total_lines_detected'],
             'trusted_lines_per_page' => array_map('count', $lineAnchorsPerPage),
+            'ocr_summary' => $this->lastDiagnostics['ocr'],
         ]);
 
         return $lineAnchorsPerPage;
@@ -117,7 +132,7 @@ class PdfLineExtractor
      *     total_lines_detected: int
      * }
      */
-    private function extractUsingPoppler(string $inputPath): array
+    private function extractUsingPoppler(string $inputPath, array $context = []): array
     {
         $binary = (string) config('line_numbering.poppler_binary', 'pdftotext');
         if (! $this->commandExists($binary)) {
@@ -141,7 +156,7 @@ class PdfLineExtractor
             ];
         }
 
-        return $this->buildTrustedAnchorsFromRawPages($inputPath, $rawPages['pages'], 'poppler');
+        return $this->buildTrustedAnchorsFromRawPages($inputPath, $rawPages['pages'], 'poppler', $context);
     }
 
     /**
@@ -151,7 +166,7 @@ class PdfLineExtractor
      *     total_lines_detected: int
      * }
      */
-    private function extractUsingSmalot(string $inputPath): array
+    private function extractUsingSmalot(string $inputPath, array $context = []): array
     {
         try {
             $config = new Config();
@@ -202,7 +217,7 @@ class PdfLineExtractor
             }
         }
 
-        return $this->buildTrustedAnchorsFromRawPages($inputPath, $pages, 'smalot');
+        return $this->buildTrustedAnchorsFromRawPages($inputPath, $pages, 'smalot', $context);
     }
 
     /**
@@ -440,7 +455,7 @@ class PdfLineExtractor
      *     total_lines_detected: int
      * }
      */
-    private function buildTrustedAnchorsFromRawPages(string $inputPath, array $pages, string $engine): array
+    private function buildTrustedAnchorsFromRawPages(string $inputPath, array $pages, string $engine, array $context = []): array
     {
         if ($pages === []) {
             return [
@@ -451,8 +466,9 @@ class PdfLineExtractor
             ];
         }
 
-        $pages = $this->maybeApplyOcrFallback($inputPath, $pages, $engine);
+        $pages = $this->maybeApplyOcrFallback($inputPath, $pages, $engine, $context);
         $artifactMarks = $this->repeatedArtifactDetector->detect($pages);
+        $imageBasedPageMetrics = $this->detectImageBasedPages($inputPath, $pages);
 
         $anchorsPerPage = [];
         $pageDiagnostics = [];
@@ -513,6 +529,7 @@ class PdfLineExtractor
             $baseDiagnostic = is_array($page['diagnostic'] ?? null) ? $page['diagnostic'] : [];
             $pageDiagnostics[$pageNo] = $baseDiagnostic + [
                 'engine' => $page['engine'] ?? $engine,
+                'ocr_provider' => $page['ocr_provider'] ?? ($baseDiagnostic['ocr_provider'] ?? null),
                 'page_rotation' => (int) ($page['page_rotation'] ?? 0),
                 'raw_lines_detected' => count(is_array($page['raw_lines'] ?? null) ? $page['raw_lines'] : []),
                 'trusted_lines_detected' => count($trustedAnchors),
@@ -526,10 +543,12 @@ class PdfLineExtractor
                 'body_region' => $layout['body_region'] ?? null,
                 'multi_column_suspected' => (bool) ($layout['multi_column_suspected'] ?? false),
                 'table_suspected' => (bool) ($layout['table_suspected'] ?? false),
+                'table_row_count' => (int) ($layout['table_row_count'] ?? 0),
                 'used_ocr_fallback' => (bool) ($page['used_ocr_fallback'] ?? false),
                 'used_ocr_grid_reconstruction' => $ocrGridDiagnostics !== null,
                 'ocr_grid_diagnostics' => $ocrGridDiagnostics,
                 'scanned_page_classification' => $scannedPageClassification,
+                'image_based_page_metrics' => $imageBasedPageMetrics[$pageNo] ?? null,
                 'trusted_anchors' => $trustedAnchors,
                 'scored_lines' => $scored['scored_lines'] ?? [],
             ];
@@ -547,43 +566,158 @@ class PdfLineExtractor
      * @param  array<int, array<string, mixed>>  $pages
      * @return array<int, array<string, mixed>>
      */
-    private function maybeApplyOcrFallback(string $inputPath, array $pages, string $engine): array
+    private function maybeApplyOcrFallback(string $inputPath, array $pages, string $engine, array $context = []): array
     {
-        if (! (bool) config('line_numbering.enable_ocr_fallback', false)) {
-            return $pages;
-        }
-
-        if (! $this->commandExists((string) config('line_numbering.pdftoppm_binary', 'pdftoppm'))
-            || ! $this->commandExists((string) config('line_numbering.tesseract_binary', 'tesseract'))) {
+        if (! $this->ocrFallbackEnabled()) {
             return $pages;
         }
 
         $artifactMarks = $this->repeatedArtifactDetector->detect($pages);
         $ocrTriggerConfidence = max(0.05, min(0.95, (float) config('line_numbering.ocr_trigger_page_confidence', 0.4)));
-        $replacements = [];
+        $imageBasedPageMetrics = $this->detectImageBasedPages($inputPath, $pages);
+        $candidatePages = [];
 
         foreach ($pages as $pageNo => $page) {
             $layout = $this->pageLayoutAnalyzer->analyze($page, $artifactMarks[$pageNo] ?? []);
             $scored = $this->confidenceScorer->scorePage($page, $layout, $artifactMarks[$pageNo] ?? []);
             $rawLines = is_array($page['raw_lines'] ?? null) ? $page['raw_lines'] : [];
+            $trustedAnchors = is_array($scored['trusted_anchors'] ?? null) ? $scored['trusted_anchors'] : [];
+            $pageConfidence = (float) ($scored['page_confidence'] ?? 0.0);
+            $imageMetrics = is_array($imageBasedPageMetrics[$pageNo] ?? null) ? $imageBasedPageMetrics[$pageNo] : [];
+            $isMostlyImageBased = (bool) ($imageMetrics['is_mostly_image_based'] ?? false);
 
-            $needsOcr = count($rawLines) === 0
-                || count($scored['trusted_anchors'] ?? []) < 4
-                || ((float) ($scored['page_confidence'] ?? 0.0)) < $ocrTriggerConfidence;
+            $reason = null;
+            if (count($rawLines) === 0) {
+                $reason = 'no_extractable_lines';
+            } elseif ($isMostlyImageBased) {
+                $reason = 'page_is_mostly_image_based';
+            } elseif (count($trustedAnchors) < 4) {
+                $reason = 'too_few_trusted_anchors';
+            } elseif ($pageConfidence < $ocrTriggerConfidence) {
+                $reason = 'low_page_confidence';
+            }
 
-            if (! $needsOcr) {
+            if ($reason === null) {
                 continue;
             }
 
-            $ocrPage = $this->extractRawPageUsingOcr($inputPath, $pageNo, (float) ($page['page_width'] ?? 0.0), (float) ($page['page_height'] ?? 0.0));
-            if ($ocrPage === null || count($ocrPage['raw_lines']) === 0) {
-                continue;
-            }
-
-            $ocrPage['used_ocr_fallback'] = true;
-            $ocrPage['page_rotation'] = (int) ($page['page_rotation'] ?? 0);
-            $replacements[$pageNo] = $ocrPage;
+            $candidatePages[$pageNo] = [
+                'reason' => $reason,
+                'page_confidence' => round($pageConfidence, 4),
+                'trusted_anchor_count' => count($trustedAnchors),
+                'raw_line_count' => count($rawLines),
+                'image_based_page' => $isMostlyImageBased,
+                'image_based_page_metrics' => $imageMetrics !== [] ? $imageMetrics : null,
+            ];
         }
+
+        $this->lastDiagnostics['ocr']['candidate_pages'] = array_keys($candidatePages);
+        $this->lastDiagnostics['ocr']['candidate_details'] = $candidatePages;
+
+        if ($candidatePages === []) {
+            return $pages;
+        }
+
+        $replacements = [];
+        $remainingPages = $candidatePages;
+
+        Log::info('[LegalLine] PdfLineExtractor: OCR fallback candidates identified', [
+            'input_path' => $inputPath,
+            'engine' => $engine,
+            'candidate_pages' => array_keys($candidatePages),
+            'candidate_details' => $candidatePages,
+            'textract_enabled' => $this->textractJobCoordinator->enabled(),
+            'local_ocr_enabled' => (bool) config('line_numbering.enable_ocr_fallback', false),
+        ]);
+
+        $textractDecision = $this->textractEligibilityDecision($pages, $candidatePages);
+        $this->lastDiagnostics['ocr']['textract_decision'] = $textractDecision;
+
+        if ($this->textractJobCoordinator->enabled() && ($textractDecision['should_use'] ?? false)) {
+            $this->lastDiagnostics['ocr']['providers_attempted'][] = 'textract';
+
+            try {
+                $textractRun = $this->extractPagesUsingTextract($inputPath, $pages, $candidatePages, $context);
+                $this->lastDiagnostics['ocr']['textract'] = $textractRun['summary'];
+
+                foreach ($textractRun['pages'] as $pageNo => $ocrPage) {
+                    $ocrPage['used_ocr_fallback'] = true;
+                    $ocrPage['page_rotation'] = (int) ($pages[$pageNo]['page_rotation'] ?? 0);
+                    $replacements[$pageNo] = $ocrPage;
+                    unset($remainingPages[$pageNo]);
+                }
+
+                if ($textractRun['pages'] !== []) {
+                    $this->lastDiagnostics['ocr']['providers_used'][] = 'textract';
+                }
+            } catch (\Throwable $e) {
+                $this->lastDiagnostics['ocr']['textract'] = [
+                    'status' => 'failed',
+                    'error' => $e->getMessage(),
+                    'pages_replaced' => [],
+                ];
+
+                Log::warning('[LegalLine] PdfLineExtractor: Textract fallback failed, will try local OCR if available', [
+                    'input_path' => $inputPath,
+                    'engine' => $engine,
+                    'candidate_pages' => array_keys($candidatePages),
+                    'message' => $e->getMessage(),
+                ]);
+            }
+        } elseif ($this->textractJobCoordinator->enabled()) {
+            $this->lastDiagnostics['ocr']['textract'] = [
+                'status' => 'skipped',
+                'reason' => $textractDecision['reason'] ?? 'not_eligible',
+                'pages_replaced' => [],
+            ];
+
+            Log::info('[LegalLine] PdfLineExtractor: skipping Textract fallback for this document', [
+                'input_path' => $inputPath,
+                'engine' => $engine,
+                'candidate_pages' => array_keys($candidatePages),
+                'reason' => $textractDecision['reason'] ?? 'not_eligible',
+                'summary' => $textractDecision,
+            ]);
+        }
+
+        $localOcrEnabled = (bool) config('line_numbering.enable_ocr_fallback', false);
+        $localOcrAvailable = $this->localOcrAvailable();
+        $localSummary = [
+            'available' => $localOcrAvailable,
+            'pages_attempted' => array_keys($remainingPages),
+            'pages_replaced' => [],
+        ];
+
+        if ($remainingPages !== [] && $localOcrEnabled && $localOcrAvailable) {
+            $this->lastDiagnostics['ocr']['providers_attempted'][] = 'tesseract';
+
+            foreach (array_keys($remainingPages) as $pageNo) {
+                $page = $pages[$pageNo];
+                $ocrPage = $this->extractRawPageUsingOcr($inputPath, $pageNo, (float) ($page['page_width'] ?? 0.0), (float) ($page['page_height'] ?? 0.0));
+                if ($ocrPage === null || count($ocrPage['raw_lines']) === 0) {
+                    continue;
+                }
+
+                $ocrPage['used_ocr_fallback'] = true;
+                $ocrPage['page_rotation'] = (int) ($page['page_rotation'] ?? 0);
+                $replacements[$pageNo] = $ocrPage;
+                $localSummary['pages_replaced'][] = $pageNo;
+            }
+
+            if ($localSummary['pages_replaced'] !== []) {
+                $this->lastDiagnostics['ocr']['providers_used'][] = 'tesseract';
+            }
+        } elseif ($remainingPages !== []) {
+            Log::info('[LegalLine] PdfLineExtractor: local OCR fallback unavailable for remaining pages', [
+                'input_path' => $inputPath,
+                'engine' => $engine,
+                'remaining_pages' => array_keys($remainingPages),
+                'local_ocr_enabled' => $localOcrEnabled,
+                'local_ocr_available' => $localOcrAvailable,
+            ]);
+        }
+
+        $this->lastDiagnostics['ocr']['local'] = $localSummary;
 
         if ($replacements === []) {
             return $pages;
@@ -597,9 +731,260 @@ class PdfLineExtractor
             'input_path' => $inputPath,
             'engine' => $engine,
             'pages' => array_keys($replacements),
+            'providers_used' => $this->lastDiagnostics['ocr']['providers_used'],
         ]);
 
+        $this->lastDiagnostics['ocr']['pages_replaced'] = array_keys($replacements);
+
         return $pages;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @param  array<int, array<string, mixed>>  $candidatePages
+     * @return array<string, mixed>
+     */
+    private function textractEligibilityDecision(array $pages, array $candidatePages): array
+    {
+        $totalPages = count($pages);
+        $candidateCount = count($candidatePages);
+        $candidateRatio = $totalPages > 0 ? round($candidateCount / $totalPages, 4) : 0.0;
+        $noExtractableLinePages = [];
+        $lowConfidencePages = [];
+        $imageBasedPages = [];
+
+        foreach ($candidatePages as $pageNo => $details) {
+            $reason = (string) ($details['reason'] ?? '');
+            if ($reason === 'no_extractable_lines') {
+                $noExtractableLinePages[] = $pageNo;
+            }
+
+            if ($reason === 'page_is_mostly_image_based') {
+                $imageBasedPages[] = $pageNo;
+            }
+
+            if ($reason === 'low_page_confidence') {
+                $lowConfidencePages[] = $pageNo;
+            }
+        }
+
+        $allPagesAreCandidates = $candidateCount > 0 && $candidateCount === $totalPages;
+        $likelyScannedDocument = $allPagesAreCandidates
+            || count($imageBasedPages) >= max(1, min(3, (int) ceil($totalPages * 0.1)))
+            || ($candidateRatio >= 0.1 && $imageBasedPages !== [])
+            || $candidateRatio >= 0.2
+            || count($noExtractableLinePages) >= max(1, min(3, (int) ceil($totalPages * 0.1)))
+            || ($totalPages <= 12 && (count($noExtractableLinePages) >= 1 || count($imageBasedPages) >= 1));
+
+        if ($likelyScannedDocument) {
+            return [
+                'should_use' => true,
+                'reason' => 'document_looks_scanned_or_ocr_dependent',
+                'total_pages' => $totalPages,
+                'candidate_count' => $candidateCount,
+                'candidate_ratio' => $candidateRatio,
+                'no_extractable_line_pages' => $noExtractableLinePages,
+                'image_based_pages' => $imageBasedPages,
+                'low_confidence_pages' => $lowConfidencePages,
+            ];
+        }
+
+        return [
+            'should_use' => false,
+            'reason' => 'candidate_pages_do_not_justify_whole_document_textract',
+            'total_pages' => $totalPages,
+            'candidate_count' => $candidateCount,
+            'candidate_ratio' => $candidateRatio,
+            'no_extractable_line_pages' => $noExtractableLinePages,
+            'image_based_pages' => $imageBasedPages,
+            'low_confidence_pages' => $lowConfidencePages,
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @return array<int, array<string, mixed>>
+     */
+    private function detectImageBasedPages(string $inputPath, array $pages): array
+    {
+        $cacheKey = sha1($inputPath . '|' . (is_file($inputPath) ? ((string) filemtime($inputPath) . '|' . (string) filesize($inputPath)) : 'missing'));
+        if (isset($this->pageImageMetricsCache[$cacheKey])) {
+            return $this->pageImageMetricsCache[$cacheKey];
+        }
+
+        $binary = (string) config('line_numbering.pdfimages_binary', 'pdfimages');
+        if (! $this->commandExists($binary) || ! is_file($inputPath)) {
+            return $this->pageImageMetricsCache[$cacheKey] = [];
+        }
+
+        $output = shell_exec(sprintf('%s -list %s 2>/dev/null', escapeshellcmd($binary), escapeshellarg($inputPath)));
+        if (! is_string($output) || trim($output) === '') {
+            return $this->pageImageMetricsCache[$cacheKey] = [];
+        }
+
+        $coverageThreshold = max(0.15, min(0.98, (float) config('line_numbering.image_page_coverage_threshold', 0.62)));
+        $axisThreshold = max(0.15, min(0.98, (float) config('line_numbering.image_page_axis_coverage_threshold', 0.78)));
+        $metrics = [];
+        $lines = preg_split("/\r\n|\n|\r/", trim($output)) ?: [];
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+            if ($trimmed === '' || str_starts_with($trimmed, 'page') || str_starts_with($trimmed, '-')) {
+                continue;
+            }
+
+            $parts = preg_split('/\s+/', $trimmed) ?: [];
+            if (count($parts) < 12 || ! ctype_digit((string) ($parts[0] ?? ''))) {
+                continue;
+            }
+
+            $pageNo = (int) $parts[0];
+            $type = strtolower((string) ($parts[2] ?? ''));
+            if ($type !== 'image') {
+                continue;
+            }
+
+            $pageWidth = max(1.0, (float) ($pages[$pageNo]['page_width'] ?? 0.0));
+            $pageHeight = max(1.0, (float) ($pages[$pageNo]['page_height'] ?? 0.0));
+            if ($pageWidth <= 1.0 || $pageHeight <= 1.0) {
+                continue;
+            }
+
+            $widthPixels = max(0.0, (float) ($parts[3] ?? 0.0));
+            $heightPixels = max(0.0, (float) ($parts[4] ?? 0.0));
+            $xPpi = max(0.0, (float) ($parts[count($parts) - 4] ?? 0.0));
+            $yPpi = max(0.0, (float) ($parts[count($parts) - 3] ?? 0.0));
+            if ($widthPixels <= 0.0 || $heightPixels <= 0.0 || $xPpi <= 0.0 || $yPpi <= 0.0) {
+                continue;
+            }
+
+            $renderedWidthPt = ($widthPixels / $xPpi) * 72.0;
+            $renderedHeightPt = ($heightPixels / $yPpi) * 72.0;
+            $widthRatio = min(1.5, $renderedWidthPt / $pageWidth);
+            $heightRatio = min(1.5, $renderedHeightPt / $pageHeight);
+            $coverageRatio = min(1.5, ($renderedWidthPt * $renderedHeightPt) / ($pageWidth * $pageHeight));
+
+            $pageMetric = $metrics[$pageNo] ?? [
+                'image_count' => 0,
+                'dominant_image_coverage_ratio' => 0.0,
+                'dominant_image_width_ratio' => 0.0,
+                'dominant_image_height_ratio' => 0.0,
+                'is_mostly_image_based' => false,
+            ];
+
+            $pageMetric['image_count']++;
+            if ($coverageRatio > (float) $pageMetric['dominant_image_coverage_ratio']) {
+                $pageMetric['dominant_image_coverage_ratio'] = round($coverageRatio, 4);
+                $pageMetric['dominant_image_width_ratio'] = round($widthRatio, 4);
+                $pageMetric['dominant_image_height_ratio'] = round($heightRatio, 4);
+            }
+
+            $pageMetric['is_mostly_image_based'] = $pageMetric['is_mostly_image_based']
+                || $coverageRatio >= $coverageThreshold
+                || ($widthRatio >= $axisThreshold && $heightRatio >= $axisThreshold);
+
+            $metrics[$pageNo] = $pageMetric;
+        }
+
+        return $this->pageImageMetricsCache[$cacheKey] = $metrics;
+    }
+
+    private function ocrFallbackEnabled(): bool
+    {
+        return (bool) config('line_numbering.enable_ocr_fallback', false)
+            || $this->textractJobCoordinator->enabled();
+    }
+
+    private function localOcrAvailable(): bool
+    {
+        return $this->commandExists((string) config('line_numbering.pdftoppm_binary', 'pdftoppm'))
+            && $this->commandExists((string) config('line_numbering.tesseract_binary', 'tesseract'));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $pages
+     * @param  array<int, array<string, mixed>>  $candidatePages
+     * @return array{pages: array<int, array<string, mixed>>, summary: array<string, mixed>}
+     */
+    private function extractPagesUsingTextract(string $inputPath, array $pages, array $candidatePages, array $context = []): array
+    {
+        $pdfJobId = $this->resolveProcessingJobId($inputPath, $context);
+        $pageDimensions = $this->textractJobCoordinator->resolvePageDimensions($inputPath);
+
+        Log::info('[LegalLine] PdfLineExtractor: starting Textract OCR fallback', [
+            'input_path' => $inputPath,
+            'pdf_job_id' => $pdfJobId,
+            'candidate_pages' => array_keys($candidatePages),
+            'page_dimensions_resolved' => count($pageDimensions),
+        ]);
+
+        $textractOptions = [];
+        $processingStateCallback = $context['processing_state_callback'] ?? null;
+        if (is_callable($processingStateCallback)) {
+            $textractOptions['progress_callback'] = $processingStateCallback;
+        }
+
+        $run = $this->textractJobCoordinator->runSynchronous($pdfJobId, $inputPath, $pageDimensions, $textractOptions);
+        $normalizedPages = is_array($run['pages'] ?? null) ? $run['pages'] : [];
+        $replacements = [];
+
+        foreach (array_keys($candidatePages) as $pageNo) {
+            $ocrPage = is_array($normalizedPages[$pageNo] ?? null) ? $normalizedPages[$pageNo] : null;
+            if ($ocrPage === null || count($ocrPage['raw_lines'] ?? []) === 0) {
+                continue;
+            }
+
+            $ocrPage['ocr_provider'] = 'textract';
+            $ocrPage['used_ocr_fallback'] = true;
+            $ocrPage['page_rotation'] = (int) ($pages[$pageNo]['page_rotation'] ?? 0);
+            $replacements[$pageNo] = $ocrPage;
+        }
+
+        $summary = [
+            'status' => $run['status'] ?? 'UNKNOWN',
+            'job_id' => $run['job_id'] ?? null,
+            'bucket' => $run['bucket'] ?? null,
+            'source_key' => $run['source_key'] ?? null,
+            'result_path' => $run['result_path'] ?? null,
+            'started_at' => $run['started_at'] ?? null,
+            'completed_at' => $run['completed_at'] ?? null,
+            'poll_attempts' => $run['poll_attempts'] ?? null,
+            'status_message' => $run['status_message'] ?? null,
+            'pages_available' => array_keys($normalizedPages),
+            'pages_replaced' => array_keys($replacements),
+            'warnings' => $run['warnings'] ?? [],
+            'source_deleted' => $run['source_deleted'] ?? false,
+        ];
+
+        Log::info('[LegalLine] PdfLineExtractor: Textract OCR fallback completed', [
+            'input_path' => $inputPath,
+            'pdf_job_id' => $pdfJobId,
+            'job_id' => $summary['job_id'],
+            'status' => $summary['status'],
+            'pages_replaced' => $summary['pages_replaced'],
+            'pages_available' => $summary['pages_available'],
+            'result_path' => $summary['result_path'],
+        ]);
+
+        return [
+            'pages' => $replacements,
+            'summary' => $summary,
+        ];
+    }
+
+    private function resolveProcessingJobId(string $inputPath, array $context = []): string
+    {
+        $jobId = trim((string) ($context['pdf_job_id'] ?? ''));
+        if ($jobId !== '') {
+            return $jobId;
+        }
+
+        $normalizedPath = str_replace('\\', '/', $inputPath);
+        if (preg_match('#/pdf-jobs/([^/]+)/input\.pdf$#', $normalizedPath, $matches) === 1) {
+            return (string) $matches[1];
+        }
+
+        return 'adhoc-' . substr(sha1($normalizedPath), 0, 16);
     }
 
     /**
@@ -677,6 +1062,7 @@ class PdfLineExtractor
                 $candidatePage = [
                     'page_no' => $pageNo,
                     'engine' => 'ocr',
+                    'ocr_provider' => 'tesseract',
                     'page_width' => $pageWidth,
                     'page_height' => $pageHeight,
                     'page_rotation' => 0,
@@ -726,12 +1112,14 @@ class PdfLineExtractor
         return [
             'page_no' => $pageNo,
             'engine' => 'ocr',
+            'ocr_provider' => 'tesseract',
             'page_width' => $pageWidth,
             'page_height' => $pageHeight,
             'page_rotation' => 0,
             'raw_lines' => $bestCandidate['page']['raw_lines'],
             'diagnostic' => [
                 'engine' => 'ocr',
+                'ocr_provider' => 'tesseract',
                 'raw_lines_detected' => count($bestCandidate['page']['raw_lines']),
                 'ocr_render_dpi' => $renderDpi,
                 'ocr_selected_candidate' => $bestCandidate['summary'],

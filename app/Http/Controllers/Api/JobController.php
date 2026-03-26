@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\PdfJob;
+use App\Support\PdfJobPayloadFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -33,22 +34,7 @@ class JobController extends Controller
             'total_pages' => $job->total_pages,
         ]);
 
-        $data = [
-            'id' => $job->id,
-            'status' => $job->status,
-            'progress' => $job->progress,
-            'processed_pages' => $job->processed_pages,
-            'total_pages' => $job->total_pages,
-            'eta_seconds' => $job->eta_seconds,
-            'error_message' => $job->error_message,
-            'storage_deleted_at' => optional($job->storage_deleted_at)->toIso8601String(),
-        ];
-
-        if ($job->status === 'completed' && $job->output_path) {
-            $data['download_url'] = url("/api/job/{$job->id}/download");
-        }
-
-        return response()->json($data);
+        return response()->json(PdfJobPayloadFactory::fromModel($job));
     }
 
     public function download(Request $request, string $id): StreamedResponse|JsonResponse

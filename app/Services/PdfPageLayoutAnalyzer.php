@@ -64,6 +64,7 @@ class PdfPageLayoutAnalyzer
 
         $candidateCount = max(1, count($candidateLines));
         $tableLikeRatio = $tableLikeCount / $candidateCount;
+        $tableRows = $this->detectTableRows($candidateLines, $pageWidth);
 
         return [
             'page_width' => $pageWidth,
@@ -73,8 +74,13 @@ class PdfPageLayoutAnalyzer
             'multi_column_suspected' => (bool) $columnData['suspected'],
             'column_gap_pt' => (float) $columnData['gap'],
             'dominant_column' => $columnData['bounds'],
-            'table_suspected' => $tableLikeCount >= 3 && $tableLikeRatio >= 0.18,
+            'table_suspected' => ($tableLikeCount >= 3 && $tableLikeRatio >= 0.18)
+                || $tableRows['count'] >= 3,
             'table_like_ratio' => round($tableLikeRatio, 3),
+            'table_row_count' => $tableRows['count'],
+            'table_row_ratio' => round($tableRows['ratio'], 3),
+            'table_row_anchors' => $tableRows['anchors'],
+            'table_row_line_ids' => $tableRows['line_ids'],
             'body_candidate_count' => count($dominantLines),
             'raw_candidate_count' => count($candidateLines),
         ];
@@ -222,6 +228,116 @@ class PdfPageLayoutAnalyzer
         }
 
         return $wideGapCount >= 2;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $lines
+     * @return array{count: int, ratio: float, anchors: list<array<string, mixed>>, line_ids: list<string>}
+     */
+    private function detectTableRows(array $lines, float $pageWidth): array
+    {
+        if (count($lines) < 3) {
+            return [
+                'count' => 0,
+                'ratio' => 0.0,
+                'anchors' => [],
+                'line_ids' => [],
+            ];
+        }
+
+        $heights = array_map(static fn (array $line): float => max(1.0, (float) ($line['height'] ?? 0.0)), $lines);
+        $rowTolerance = max(6.0, $this->median($heights) * 0.7);
+
+        usort($lines, static function (array $a, array $b) use ($rowTolerance): int {
+            $dy = ((float) ($b['y'] ?? 0.0)) - ((float) ($a['y'] ?? 0.0));
+            if (abs($dy) > $rowTolerance) {
+                return $dy > 0 ? 1 : -1;
+            }
+
+            return ((float) ($a['x_start'] ?? 0.0)) <=> ((float) ($b['x_start'] ?? 0.0));
+        });
+
+        $rows = [];
+        $currentRowY = null;
+        $currentRow = [];
+
+        foreach ($lines as $line) {
+            $lineY = (float) ($line['y'] ?? 0.0);
+            if ($currentRowY === null || abs($lineY - $currentRowY) > $rowTolerance) {
+                if ($currentRow !== []) {
+                    $rows[] = $currentRow;
+                }
+
+                $currentRow = [$line];
+                $currentRowY = $lineY;
+                continue;
+            }
+
+            $currentRow[] = $line;
+        }
+
+        if ($currentRow !== []) {
+            $rows[] = $currentRow;
+        }
+
+        $tableRowCount = 0;
+        $tableRowAnchors = [];
+        $tableRowLineIds = [];
+        $gapThreshold = max(48.0, $pageWidth * 0.12);
+
+        foreach ($rows as $row) {
+            usort($row, static fn (array $a, array $b): int => ((float) ($a['x_start'] ?? 0.0)) <=> ((float) ($b['x_start'] ?? 0.0)));
+
+            $wideGapCount = 0;
+            for ($index = 0, $max = count($row) - 1; $index < $max; $index++) {
+                $gap = ((float) ($row[$index + 1]['x_start'] ?? 0.0)) - ((float) ($row[$index]['x_end'] ?? 0.0));
+                if ($gap >= $gapThreshold) {
+                    $wideGapCount++;
+                }
+            }
+
+            $rowSpan = ((float) ($row[array_key_last($row)]['x_end'] ?? 0.0)) - ((float) ($row[0]['x_start'] ?? 0.0));
+            $containsTableLikeLine = count(array_filter(
+                $row,
+                fn (array $line): bool => $this->isTableLike($line, $pageWidth)
+            )) > 0;
+
+            $qualifiesAsTableRow = (count($row) >= 3 && $wideGapCount >= 2 && $rowSpan >= ($pageWidth * 0.45))
+                || (count($row) >= 2 && $wideGapCount >= 1 && $rowSpan >= ($pageWidth * 0.35))
+                || (count($row) === 1 && $containsTableLikeLine);
+
+            if (! $qualifiesAsTableRow) {
+                continue;
+            }
+
+            $tableRowCount++;
+            $tableRowAnchors[] = [
+                'id' => 'table-row-' . $tableRowCount,
+                'text' => trim(implode(' ', array_map(
+                    static fn (array $line): string => trim((string) ($line['text'] ?? '')),
+                    $row
+                ))),
+                'y' => round($this->median(array_map(static fn (array $line): float => (float) ($line['y'] ?? 0.0), $row)), 3),
+                'x_start' => round(min(array_map(static fn (array $line): float => (float) ($line['x_start'] ?? 0.0), $row)), 3),
+                'x_end' => round(max(array_map(static fn (array $line): float => (float) ($line['x_end'] ?? 0.0), $row)), 3),
+            ];
+
+            foreach ($row as $line) {
+                $lineId = trim((string) ($line['id'] ?? ''));
+                if ($lineId !== '') {
+                    $tableRowLineIds[] = $lineId;
+                }
+            }
+        }
+
+        $rowCount = max(1, count($rows));
+
+        return [
+            'count' => $tableRowCount,
+            'ratio' => $tableRowCount / $rowCount,
+            'anchors' => $tableRowAnchors,
+            'line_ids' => array_values(array_unique($tableRowLineIds)),
+        ];
     }
 
     /**

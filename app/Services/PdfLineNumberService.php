@@ -36,7 +36,8 @@ class PdfLineNumberService
         int $lineInterval = 10,
         string $margin = 'left',
         int $fontSizePt = 8,
-        ?callable $onPageProcessed = null
+        ?callable $onPageProcessed = null,
+        array $context = []
     ): int {
         $lineInsetPt = $this->lineNumberInsetPt();
         $pageEdgePaddingPt = $this->pageEdgePaddingPt();
@@ -44,6 +45,7 @@ class PdfLineNumberService
         $drawDebugOverlay = (bool) config('line_numbering.debug_overlay', false);
         $diagnosticsEnabled = (bool) config('line_numbering.enable_diagnostics', true);
         $lowConfidenceStrategy = $this->lowConfidencePageStrategy();
+        $skipTablePages = (bool) config('line_numbering.skip_table_pages', false);
         $minimumPageConfidence = max(0.05, min(0.95, (float) config('line_numbering.minimum_page_confidence', 0.58)));
 
         Log::info('[LegalLine] PdfLineNumberService: line numbering started', [
@@ -57,7 +59,9 @@ class PdfLineNumberService
             'label_width_factor' => $labelWidthFactor,
             'debug_overlay' => $drawDebugOverlay,
             'low_confidence_page_strategy' => $lowConfidenceStrategy,
+            'skip_table_pages' => $skipTablePages,
             'minimum_page_confidence' => $minimumPageConfidence,
+            'job_id' => $context['pdf_job_id'] ?? null,
         ]);
 
         $compatibleSource = $this->fpdiCompatibility->resolveProcessablePath($inputPath);
@@ -68,7 +72,7 @@ class PdfLineNumberService
         $effectiveInputPath = $compatibleSource['path'];
 
         try {
-            $lineAnchorsPerPage = $this->lineExtractor->getLineAnchorsPerPage($effectiveInputPath);
+            $lineAnchorsPerPage = $this->lineExtractor->getLineAnchorsPerPage($effectiveInputPath, $context);
             $extractorDiagnostics = $this->lineExtractor->getLastDiagnostics();
 
             $pdf = new Fpdi('P', 'pt');
@@ -101,6 +105,7 @@ class PdfLineNumberService
                 $scannedPageClassification = is_array($pageDiagnostics['scanned_page_classification'] ?? null)
                     ? $pageDiagnostics['scanned_page_classification']
                     : null;
+                $skipTablePage = $skipTablePages && (bool) ($pageDiagnostics['table_suspected'] ?? false);
                 $skipScannedNonBodyPage = ($pageDiagnostics['engine'] ?? null) === 'ocr'
                     && is_array($scannedPageClassification)
                     && (($scannedPageClassification['should_number'] ?? true) === false);
@@ -120,7 +125,10 @@ class PdfLineNumberService
                     $this->drawPageDiagnosticsOverlay($pdf, $pageHeight, $pageDiagnostics);
                 }
 
-                if ($skipScannedNonBodyPage) {
+                if ($skipTablePage) {
+                    $placementMode = 'skip_table_page';
+                    $skippedLowConfidencePages++;
+                } elseif ($skipScannedNonBodyPage) {
                     $placementMode = 'skip_scanned_non_body';
                     $skippedLowConfidencePages++;
                 } elseif ($lowConfidence && $lowConfidenceStrategy === 'skip') {
@@ -218,6 +226,7 @@ class PdfLineNumberService
                     'engine_preference' => $extractorDiagnostics['engine_preference'] ?? null,
                     'engine_used' => $extractorDiagnostics['engine_used'] ?? null,
                     'total_lines_detected' => $extractorDiagnostics['total_lines_detected'] ?? null,
+                    'ocr' => $extractorDiagnostics['ocr'] ?? null,
                 ],
             ];
 
@@ -230,6 +239,7 @@ class PdfLineNumberService
                 'fallback_usage_rate' => $pageCount > 0 ? round($fallbackPages / $pageCount, 4) : 0.0,
                 'normalized_input' => $compatibleSource['normalized'],
                 'extractor_summary' => $diagnosticsEnabled ? $this->lastRunDiagnostics['extractor_summary'] : null,
+                'ocr_summary' => $diagnosticsEnabled ? ($this->lastRunDiagnostics['extractor_summary']['ocr'] ?? null) : null,
             ]);
 
             return $pageCount;

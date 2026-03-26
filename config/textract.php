@@ -25,5 +25,6 @@ return [
     'force_for_scanned_documents' => (bool) env('TEXTRACT_FORCE_FOR_SCANNED_DOCUMENTS', false),
     'default_page_width_pt' => (float) env('TEXTRACT_DEFAULT_PAGE_WIDTH_PT', 612.0),
     'default_page_height_pt' => (float) env('TEXTRACT_DEFAULT_PAGE_HEIGHT_PT', 792.0),
-    'max_results' => max(1, min(1000, (int) env('TEXTRACT_MAX_RESULTS', 1000))),
+    'memory_limit' => env('TEXTRACT_MEMORY_LIMIT', '512M'),
+    'max_results' => max(1, min(1000, (int) env('TEXTRACT_MAX_RESULTS', 250))),
 ];

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Services\PdfLineNumberService;
+use App\Services\Scanned\TextractJobCoordinator;
 use setasign\Fpdi\Fpdi;
 use Tests\Concerns\CreatesLineNumberingPdfs;
 use Tests\TestCase;
@@ -160,6 +161,110 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
+    public function test_it_skips_numbering_on_pages_that_contain_tables(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+            'line_numbering.skip_table_pages' => true,
+            'textract.enabled' => false,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_table_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_table_' . uniqid() . '.pdf';
+
+        $this->createPdf($inputPath, [
+            $this->tableHeavyPage(),
+        ]);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageRun = $diagnostics['pages'][1] ?? [];
+        $pageDiagnostics = $pageRun['diagnostics'] ?? [];
+        $text = shell_exec(sprintf('pdftotext %s - 2>/dev/null', escapeshellarg($outputPath)));
+        $text = is_string($text) ? $text : '';
+
+        $this->assertTrue((bool) ($pageDiagnostics['table_suspected'] ?? false));
+        $this->assertSame('skip_table_page', $pageRun['placement_mode'] ?? null);
+        $this->assertSame(0, (int) ($pageRun['labels_drawn'] ?? 0));
+        $this->assertStringNotContainsString('-10', $text);
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
+    public function test_it_counts_each_table_row_as_a_line_when_numbering_table_pages(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+            'line_numbering.skip_table_pages' => false,
+            'textract.enabled' => false,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_table_rows_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_table_rows_' . uniqid() . '.pdf';
+
+        $this->createPdf($inputPath, [[
+            'texts' => [
+                ['x' => 72.0, 'y' => 96.0, 'text' => 'Intro line 1 body text'],
+                ['x' => 72.0, 'y' => 116.0, 'text' => 'Intro line 2 body text'],
+                ['x' => 72.0, 'y' => 136.0, 'text' => 'Intro line 3 body text'],
+                ['x' => 72.0, 'y' => 156.0, 'text' => 'Intro line 4 body text'],
+                ['x' => 72.0, 'y' => 176.0, 'text' => 'Intro line 5 body text'],
+                ['x' => 72.0, 'y' => 196.0, 'text' => 'Intro line 6 body text'],
+                ['x' => 72.0, 'y' => 240.0, 'text' => 'Due Date'],
+                ['x' => 228.0, 'y' => 240.0, 'text' => 'Interest (US$)'],
+                ['x' => 372.0, 'y' => 240.0, 'text' => 'Monitoring Costs (US$)'],
+                ['x' => 72.0, 'y' => 272.0, 'text' => '31-Jan-2016'],
+                ['x' => 236.0, 'y' => 272.0, 'text' => '190,667.72'],
+                ['x' => 394.0, 'y' => 272.0, 'text' => '11,751.83'],
+                ['x' => 72.0, 'y' => 304.0, 'text' => '30-Apr-2016'],
+                ['x' => 236.0, 'y' => 304.0, 'text' => '189,804.82'],
+                ['x' => 394.0, 'y' => 304.0, 'text' => '11,496.36'],
+                ['x' => 72.0, 'y' => 336.0, 'text' => '31-Jul-2016'],
+                ['x' => 236.0, 'y' => 336.0, 'text' => '250,354.84'],
+                ['x' => 394.0, 'y' => 336.0, 'text' => '11,751.83'],
+            ],
+            'font_size' => 12,
+        ]]);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageRun = $diagnostics['pages'][1] ?? [];
+        $pageDiagnostics = $pageRun['diagnostics'] ?? [];
+        $bboxXml = $this->bboxXml($outputPath);
+        $label10 = $this->findWordBox($bboxXml, 1, '-10');
+        $tableValue = $this->findWordBox($bboxXml, 1, '250,354.84');
+
+        $this->assertTrue((bool) ($pageDiagnostics['table_suspected'] ?? false));
+        $this->assertSame(4, (int) ($pageDiagnostics['table_row_count'] ?? 0));
+        $this->assertSame('trusted', $pageRun['placement_mode'] ?? null);
+        $this->assertSame(1, (int) ($pageRun['labels_drawn'] ?? 0));
+        $this->assertNotNull($label10);
+        $this->assertNotNull($tableValue);
+        $this->assertLessThanOrEqual(8.0, abs($this->wordMidY($label10) - $this->wordMidY($tableValue)));
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
     public function test_it_numbers_qpdf_normalized_pdfs_that_fpdi_cannot_open_directly(): void
     {
         if (! $this->commandExists('pdftotext')) {
@@ -241,6 +346,152 @@ class PdfLineNumberServiceTest extends TestCase
         $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
         $this->assertGreaterThanOrEqual(2, (int) ($diagnostics['pages'][1]['labels_drawn'] ?? 0));
         $this->assertStringContainsString('-10', $text);
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
+    public function test_it_can_use_textract_fallback_for_image_only_pages(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        if (! function_exists('imagecreatetruecolor') || ! function_exists('imagettftext')) {
+            $this->markTestSkipped('GD with TrueType font support is not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+            'line_numbering.low_confidence_page_strategy' => 'number',
+            'textract.enabled' => true,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_textract_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_textract_' . uniqid() . '.pdf';
+        $pdfJobId = 'textract-test-job';
+        $this->createImageOnlyPdf($inputPath, $this->bodyLines('TX', 20));
+
+        $textract = \Mockery::mock(TextractJobCoordinator::class);
+        $textract->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
+        $textract->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
+            1 => ['width' => 612.0, 'height' => 792.0],
+        ]);
+        $textract->shouldReceive('runSynchronous')->once()->with(
+            $pdfJobId,
+            $inputPath,
+            \Mockery::type('array'),
+            \Mockery::on(static fn (mixed $options): bool => is_array($options))
+        )->andReturn([
+            'status' => 'SUCCEEDED',
+            'job_id' => 'textract-job-123',
+            'bucket' => 'tenthlines3bucket',
+            'source_key' => 'textract/input/' . $pdfJobId . '/input.pdf',
+            'result_path' => 'pdf-jobs/' . $pdfJobId . '/textract-pages.json',
+            'started_at' => now()->subSeconds(2)->toISOString(),
+            'completed_at' => now()->toISOString(),
+            'poll_attempts' => 1,
+            'warnings' => [],
+            'source_deleted' => true,
+            'pages' => [
+                1 => $this->textractNormalizedPage($this->bodyLines('TX', 20)),
+            ],
+        ]);
+        $this->app->instance(TextractJobCoordinator::class, $textract);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8, null, ['pdf_job_id' => $pdfJobId]);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageRun = $diagnostics['pages'][1] ?? [];
+        $pageDiagnostics = $pageRun['diagnostics'] ?? [];
+        $ocrSummary = $diagnostics['extractor_summary']['ocr'] ?? [];
+        $text = shell_exec(sprintf('pdftotext %s - 2>/dev/null', escapeshellarg($outputPath)));
+        $text = is_string($text) ? $text : '';
+
+        $this->assertSame('ocr', $pageDiagnostics['engine'] ?? null);
+        $this->assertSame('textract', $pageDiagnostics['ocr_provider'] ?? null);
+        $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
+        $this->assertContains('textract', $ocrSummary['providers_used'] ?? []);
+        $this->assertSame('textract-job-123', $ocrSummary['textract']['job_id'] ?? null);
+        $this->assertContains(1, $ocrSummary['pages_replaced'] ?? []);
+        $this->assertGreaterThanOrEqual(2, (int) ($pageRun['labels_drawn'] ?? 0));
+        $this->assertStringContainsString('-10', $text);
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
+    public function test_it_uses_textract_for_image_based_pages_even_when_a_hidden_text_layer_exists(): void
+    {
+        if (! $this->commandExists('pdftotext') || ! $this->commandExists('pdfimages')) {
+            $this->markTestSkipped('Poppler text and image inspection commands are not available on this machine.');
+        }
+
+        if (! function_exists('imagecreatetruecolor') || ! function_exists('imagettftext')) {
+            $this->markTestSkipped('GD with TrueType font support is not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => false,
+            'textract.enabled' => true,
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_hidden_text_scan_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_hidden_text_scan_' . uniqid() . '.pdf';
+        $pdfJobId = 'textract-hidden-text-job';
+        $lines = $this->bodyLines('SCAN', 20);
+        $this->createScannedLookingPdfWithHiddenTextLayer($inputPath, $lines);
+
+        $textract = \Mockery::mock(TextractJobCoordinator::class);
+        $textract->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
+        $textract->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
+            1 => ['width' => 612.0, 'height' => 792.0],
+        ]);
+        $textract->shouldReceive('runSynchronous')->once()->with(
+            $pdfJobId,
+            $inputPath,
+            \Mockery::type('array'),
+            \Mockery::type('array')
+        )->andReturn([
+            'status' => 'SUCCEEDED',
+            'job_id' => 'textract-job-hidden-layer',
+            'bucket' => 'tenthlines3bucket',
+            'source_key' => 'textract/input/' . $pdfJobId . '/input.pdf',
+            'result_path' => 'pdf-jobs/' . $pdfJobId . '/textract-pages.json',
+            'started_at' => now()->subSeconds(2)->toISOString(),
+            'completed_at' => now()->toISOString(),
+            'poll_attempts' => 2,
+            'warnings' => [],
+            'source_deleted' => true,
+            'pages' => [
+                1 => $this->textractNormalizedPage($lines),
+            ],
+        ]);
+        $this->app->instance(TextractJobCoordinator::class, $textract);
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8, null, ['pdf_job_id' => $pdfJobId]);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageRun = $diagnostics['pages'][1] ?? [];
+        $pageDiagnostics = $pageRun['diagnostics'] ?? [];
+        $ocrSummary = $diagnostics['extractor_summary']['ocr'] ?? [];
+        $candidateDetails = $ocrSummary['candidate_details'][1] ?? [];
+        $imageMetrics = $pageDiagnostics['image_based_page_metrics'] ?? [];
+
+        $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
+        $this->assertSame('textract', $pageDiagnostics['ocr_provider'] ?? null);
+        $this->assertSame('page_is_mostly_image_based', $candidateDetails['reason'] ?? null);
+        $this->assertTrue((bool) ($candidateDetails['image_based_page'] ?? false));
+        $this->assertTrue((bool) ($imageMetrics['is_mostly_image_based'] ?? false));
+        $this->assertContains(1, $ocrSummary['pages_replaced'] ?? []);
 
         @unlink($inputPath);
         @unlink($outputPath);
@@ -349,6 +600,36 @@ class PdfLineNumberServiceTest extends TestCase
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    private function tableHeavyPage(): array
+    {
+        return [
+            'texts' => [
+                ['x' => 72.0, 'y' => 96.0, 'text' => 'The respondent relied on the following schedule:'],
+                ['x' => 72.0, 'y' => 126.0, 'text' => 'The table below summarizes the amounts in issue.'],
+                ['x' => 72.0, 'y' => 208.0, 'text' => 'Due Date'],
+                ['x' => 228.0, 'y' => 208.0, 'text' => 'Interest (US$)'],
+                ['x' => 372.0, 'y' => 208.0, 'text' => 'Monitoring Costs (US$)'],
+                ['x' => 72.0, 'y' => 240.0, 'text' => '31-Jan-2016'],
+                ['x' => 236.0, 'y' => 240.0, 'text' => '190,667.72'],
+                ['x' => 394.0, 'y' => 240.0, 'text' => '11,751.83'],
+                ['x' => 72.0, 'y' => 272.0, 'text' => '30-Apr-2016'],
+                ['x' => 236.0, 'y' => 272.0, 'text' => '189,804.82'],
+                ['x' => 394.0, 'y' => 272.0, 'text' => '11,496.36'],
+                ['x' => 72.0, 'y' => 304.0, 'text' => '31-Jul-2016'],
+                ['x' => 236.0, 'y' => 304.0, 'text' => '250,354.84'],
+                ['x' => 394.0, 'y' => 304.0, 'text' => '11,751.83'],
+                ['x' => 72.0, 'y' => 336.0, 'text' => '31-Oct-2016'],
+                ['x' => 236.0, 'y' => 336.0, 'text' => '252,781.85'],
+                ['x' => 394.0, 'y' => 336.0, 'text' => '11,751.83'],
+                ['x' => 72.0, 'y' => 396.0, 'text' => 'The parties disputed whether the schedule had been fully reconciled.'],
+            ],
+            'font_size' => 12,
+        ];
+    }
+
+    /**
      * @param  list<string>  $lines
      */
     private function createImageOnlyPdf(string $path, array $lines): void
@@ -375,6 +656,109 @@ class PdfLineNumberServiceTest extends TestCase
         $pdf->Output('F', $path);
 
         @unlink($imagePath);
+    }
+
+    /**
+     * @param  list<string>  $lines
+     */
+    private function createScannedLookingPdfWithHiddenTextLayer(string $path, array $lines): void
+    {
+        $imagePath = sys_get_temp_dir() . '/legalline_test_service_hidden_text_image_' . uniqid() . '.png';
+        $image = imagecreatetruecolor(1275, 1650);
+        $white = imagecolorallocate($image, 255, 255, 255);
+        $black = imagecolorallocate($image, 0, 0, 0);
+        imagefill($image, 0, 0, $white);
+
+        $fontPath = '/System/Library/Fonts/Supplemental/Arial.ttf';
+        $imageY = 140;
+        foreach ($lines as $line) {
+            imagettftext($image, 30, 0, 120, $imageY, $black, $fontPath, $line);
+            $imageY += 62;
+        }
+
+        imagepng($image, $imagePath);
+        imagedestroy($image);
+
+        $pdf = new Fpdi('P', 'pt');
+        $pdf->AddPage('P', [612.0, 792.0]);
+        $pdf->SetFont('Helvetica', '', 12);
+
+        $textY = 120.0;
+        foreach ($lines as $line) {
+            $pdf->Text(72.0, $textY, $line);
+            $textY += 24.0;
+        }
+
+        // Keep the text layer in the PDF, but visually cover it with a page-sized image.
+        $pdf->Image($imagePath, 0, 0, 612.0, 792.0, 'PNG');
+        $pdf->Output('F', $path);
+
+        @unlink($imagePath);
+    }
+
+    /**
+     * @param  list<string>  $lines
+     * @return array<string, mixed>
+     */
+    private function textractNormalizedPage(array $lines): array
+    {
+        $rawLines = [];
+        $baseline = 660.0;
+
+        foreach ($lines as $index => $text) {
+            $y = $baseline - ($index * 20.0);
+            $words = preg_split('/\s+/', trim($text)) ?: [];
+            $resolvedWords = [];
+            $cursor = 72.0;
+
+            foreach ($words as $wordIndex => $word) {
+                $width = max(20.0, strlen($word) * 5.8);
+                $resolvedWords[] = [
+                    'id' => sprintf('tx-word-%d-%d', $index + 1, $wordIndex + 1),
+                    'text' => $word,
+                    'x_start' => round($cursor, 3),
+                    'x_end' => round($cursor + $width, 3),
+                    'y' => round($y, 3),
+                    'top' => round($y + 7.5, 3),
+                    'bottom' => round($y - 7.5, 3),
+                    'height' => 15.0,
+                    'confidence' => 99.1,
+                    'source' => 'textract',
+                ];
+                $cursor += $width + 9.0;
+            }
+
+            $rawLines[] = [
+                'id' => sprintf('tx-line-%d', $index + 1),
+                'text' => $text,
+                'x_start' => 72.0,
+                'x_end' => 472.0,
+                'y' => round($y, 3),
+                'top' => round($y + 7.5, 3),
+                'bottom' => round($y - 7.5, 3),
+                'height' => 15.0,
+                'char_count' => strlen($text),
+                'words' => $resolvedWords,
+                'source' => 'textract',
+                'confidence' => 99.1,
+            ];
+        }
+
+        return [
+            'page_no' => 1,
+            'engine' => 'ocr',
+            'ocr_provider' => 'textract',
+            'page_width' => 612.0,
+            'page_height' => 792.0,
+            'page_rotation' => 0,
+            'raw_lines' => $rawLines,
+            'diagnostic' => [
+                'engine' => 'ocr',
+                'ocr_provider' => 'textract',
+                'raw_lines_detected' => count($rawLines),
+                'textract_lines_retained' => count($rawLines),
+            ],
+        ];
     }
 
     private function assertLabelNearMargin(string $pdfPath, string $margin): void

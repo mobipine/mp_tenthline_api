@@ -79,6 +79,36 @@ class PdfScannedPageClassifierTest extends TestCase
         $this->assertSame('body_text', $result['type'] ?? null);
     }
 
+    public function test_it_keeps_scanned_pages_with_tables_numberable(): void
+    {
+        $classifier = app(PdfScannedPageClassifier::class);
+
+        $trustedLines = [
+            $this->line('Due Date Interest (US$) Monitoring Costs (US$)', 72.0, 470.0, 680.0),
+            $this->line('31-Jan-2016 190,667.72 11,751.83', 72.0, 470.0, 652.0),
+            $this->line('30-Apr-2016 189,804.82 11,496.36', 72.0, 470.0, 624.0),
+            $this->line('31-Jul-2016 250,354.84 11,751.83', 72.0, 470.0, 596.0),
+        ];
+
+        $result = $classifier->classify(
+            ['engine' => 'ocr'],
+            [
+                'page_width' => 612.0,
+                'page_height' => 792.0,
+                'body_region' => ['left' => 64.0, 'right' => 490.0, 'top' => 702.0, 'bottom' => 560.0],
+                'median_line_spacing' => 28.0,
+                'multi_column_suspected' => false,
+                'table_suspected' => true,
+                'table_row_count' => 4,
+            ],
+            $trustedLines,
+            $this->anchors($trustedLines)
+        );
+
+        $this->assertTrue((bool) ($result['should_number'] ?? false));
+        $this->assertSame('body_text_with_table', $result['type'] ?? null);
+    }
+
     /**
      * @return array<string, mixed>
      */

@@ -114,4 +114,54 @@ class PdfOcrLineGridBuilderTest extends TestCase
 
         $this->assertNull($grid);
     }
+
+    public function test_it_does_not_regularize_dense_textract_pages_without_clear_missing_line_evidence(): void
+    {
+        $builder = app(PdfOcrLineGridBuilder::class);
+
+        $page = [
+            'engine' => 'ocr',
+            'ocr_provider' => 'textract',
+        ];
+
+        $layout = [
+            'page_width' => 595.2,
+            'page_height' => 841.44,
+            'body_region' => [
+                'left' => 77.099,
+                'right' => 504.198,
+                'top' => 757.542,
+                'bottom' => 99.447,
+            ],
+            'median_line_spacing' => 17.456,
+            'multi_column_suspected' => false,
+            'table_suspected' => false,
+        ];
+
+        $ys = [
+            745.336, 727.714, 709.609, 691.916, 674.46, 657.004, 639.548, 617.822, 600.366,
+            582.924, 565.574, 548.126, 534.812, 520.119, 502.646, 485.436, 468.08, 450.323,
+            430.076, 412.62, 395.164, 377.708, 360.252, 342.796, 325.34, 307.789, 290.428,
+            272.795, 255.464, 238.085, 220.43, 202.772, 185.692,
+        ];
+
+        $trustedLines = array_map(static function (float $y, int $index): array {
+            return [
+                'text' => sprintf('Dense OCR body line %02d with stable text width', $index + 1),
+                'y' => $y,
+                'x_start' => 112.0,
+                'x_end' => 485.0,
+            ];
+        }, $ys, array_keys($ys));
+
+        $trustedAnchors = array_map(static fn (array $line): array => [
+            'y' => $line['y'],
+            'x_start' => $line['x_start'],
+            'x_end' => $line['x_end'],
+        ], $trustedLines);
+
+        $grid = $builder->build($page, $layout, $trustedLines, $trustedAnchors);
+
+        $this->assertNull($grid);
+    }
 }

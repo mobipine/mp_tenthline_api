@@ -45,6 +45,80 @@ class PdfLineExtractorTest extends TestCase
         @unlink($inputPath);
     }
 
+    public function test_it_skips_whole_document_textract_for_a_single_minor_candidate_page_in_a_large_pdf(): void
+    {
+        $extractor = app(PdfLineExtractor::class);
+        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method->setAccessible(true);
+
+        $pages = [];
+        for ($pageNo = 1; $pageNo <= 193; $pageNo++) {
+            $pages[$pageNo] = ['page_no' => $pageNo];
+        }
+
+        $decision = $method->invoke($extractor, $pages, [
+            168 => [
+                'reason' => 'too_few_trusted_anchors',
+                'page_confidence' => 0.7555,
+                'trusted_anchor_count' => 2,
+                'raw_line_count' => 4,
+            ],
+        ]);
+
+        $this->assertFalse($decision['should_use']);
+        $this->assertSame('candidate_pages_do_not_justify_whole_document_textract', $decision['reason']);
+    }
+
+    public function test_it_uses_textract_for_a_document_that_has_no_extractable_lines(): void
+    {
+        $extractor = app(PdfLineExtractor::class);
+        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method->setAccessible(true);
+
+        $decision = $method->invoke($extractor, [
+            1 => ['page_no' => 1],
+        ], [
+            1 => [
+                'reason' => 'no_extractable_lines',
+                'page_confidence' => 0.0,
+                'trusted_anchor_count' => 0,
+                'raw_line_count' => 0,
+            ],
+        ]);
+
+        $this->assertTrue($decision['should_use']);
+        $this->assertSame('document_looks_scanned_or_ocr_dependent', $decision['reason']);
+    }
+
+    public function test_it_uses_textract_for_pages_that_are_mostly_image_based(): void
+    {
+        $extractor = app(PdfLineExtractor::class);
+        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method->setAccessible(true);
+
+        $decision = $method->invoke($extractor, [
+            1 => ['page_no' => 1],
+            2 => ['page_no' => 2],
+        ], [
+            1 => [
+                'reason' => 'page_is_mostly_image_based',
+                'page_confidence' => 0.81,
+                'trusted_anchor_count' => 22,
+                'raw_line_count' => 25,
+            ],
+            2 => [
+                'reason' => 'page_is_mostly_image_based',
+                'page_confidence' => 0.79,
+                'trusted_anchor_count' => 21,
+                'raw_line_count' => 24,
+            ],
+        ]);
+
+        $this->assertTrue($decision['should_use']);
+        $this->assertSame('document_looks_scanned_or_ocr_dependent', $decision['reason']);
+        $this->assertSame([1, 2], $decision['image_based_pages']);
+    }
+
     /**
      * @return list<string>
      */

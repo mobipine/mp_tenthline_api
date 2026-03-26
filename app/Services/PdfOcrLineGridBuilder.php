@@ -49,6 +49,11 @@ class PdfOcrLineGridBuilder
             return null;
         }
 
+        $internalMissingLines = $this->estimatedInternalMissingLines($trustedLines, $spacing);
+        if ($internalMissingLines < $this->minimumInternalMissingLines()) {
+            return null;
+        }
+
         $phase = $this->estimatePhase($trustedLines, $spacing);
         $top = (float) ($bodyRegion['top'] ?? 0.0);
         $bottom = (float) ($bodyRegion['bottom'] ?? 0.0);
@@ -98,11 +103,16 @@ class PdfOcrLineGridBuilder
 
         $estimatedCount = count($gridAnchors);
         $trustedCount = count($trustedAnchors);
+        $addedAnchorCount = max(0, $estimatedCount - $trustedCount);
         if ($trustedCount > 0 && ($estimatedCount / $trustedCount) > $this->maximumExpansionFactor()) {
             return null;
         }
 
         if ($estimatedCount <= $trustedCount) {
+            return null;
+        }
+
+        if ($addedAnchorCount < $this->minimumAddedAnchors($trustedCount)) {
             return null;
         }
 
@@ -114,6 +124,8 @@ class PdfOcrLineGridBuilder
                 'phase' => round($phase, 3),
                 'estimated_anchor_count' => $estimatedCount,
                 'trusted_anchor_count' => $trustedCount,
+                'added_anchor_count' => $addedAnchorCount,
+                'estimated_internal_missing_lines' => $internalMissingLines,
                 'grid_top_baseline' => round($topBaseline, 3),
                 'snap_tolerance_pt' => round($snapTolerance, 3),
             ],
@@ -347,6 +359,41 @@ class PdfOcrLineGridBuilder
         ];
     }
 
+    /**
+     * @param  list<array<string, mixed>>  $trustedLines
+     */
+    private function estimatedInternalMissingLines(array $trustedLines, float $spacing): int
+    {
+        if (count($trustedLines) < 2 || $spacing <= 0.0) {
+            return 0;
+        }
+
+        $lines = $trustedLines;
+        usort($lines, static fn (array $a, array $b): int => ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0)));
+
+        $missingLines = 0;
+        $tolerance = max(1.4, $spacing * 0.22);
+
+        for ($index = 0, $max = count($lines) - 1; $index < $max; $index++) {
+            $delta = ((float) ($lines[$index]['y'] ?? 0.0)) - ((float) ($lines[$index + 1]['y'] ?? 0.0));
+            if ($delta <= 0.5) {
+                continue;
+            }
+
+            $multiple = (int) round($delta / $spacing);
+            if ($multiple < 2) {
+                continue;
+            }
+
+            $expected = $spacing * $multiple;
+            if (abs($delta - $expected) <= $tolerance) {
+                $missingLines += ($multiple - 1);
+            }
+        }
+
+        return $missingLines;
+    }
+
     private function enabled(): bool
     {
         return (bool) config('line_numbering.enable_ocr_grid_reconstruction', true);
@@ -370,6 +417,19 @@ class PdfOcrLineGridBuilder
     private function minimumRegularSupport(): float
     {
         return max(0.30, min(1.0, (float) config('line_numbering.ocr_grid_min_regular_support', 0.6)));
+    }
+
+    private function minimumInternalMissingLines(): int
+    {
+        return max(1, (int) config('line_numbering.ocr_grid_min_internal_missing_lines', 2));
+    }
+
+    private function minimumAddedAnchors(int $trustedAnchorCount): int
+    {
+        $absoluteFloor = max(1, (int) config('line_numbering.ocr_grid_min_added_anchors', 3));
+        $ratioFloor = max(0.05, min(1.0, (float) config('line_numbering.ocr_grid_min_added_anchor_ratio', 0.15)));
+
+        return max($absoluteFloor, (int) ceil(max(1, $trustedAnchorCount) * $ratioFloor));
     }
 
     private function snapToleranceFactor(): float

@@ -31,6 +31,7 @@ class PdfScannedPageClassifier
             'top' => $pageHeight,
             'bottom' => 0.0,
         ];
+        $tableRowCount = max(0, (int) ($layout['table_row_count'] ?? 0));
         $trustedCount = count($trustedLines);
         $trustedAnchorCount = count($trustedAnchors);
         $medianSpacing = max(0.0, (float) ($layout['median_line_spacing'] ?? 0.0));
@@ -104,14 +105,25 @@ class PdfScannedPageClassifier
             'address_signal_count' => $addressSignalCount,
             'largest_gap_ratio' => round($largestGapRatio, 4),
             'large_gap_ratio' => round($largeGapRatio, 4),
+            'table_row_count' => $tableRowCount,
         ];
 
-        if ((bool) ($layout['multi_column_suspected'] ?? false) || (bool) ($layout['table_suspected'] ?? false)) {
+        if ((bool) ($layout['multi_column_suspected'] ?? false)) {
             return [
                 'type' => 'structured_layout',
                 'should_number' => false,
                 'confidence' => 0.92,
                 'reason' => 'structured_layout_detected',
+                'metrics' => $metrics,
+            ];
+        }
+
+        if ((bool) ($layout['table_suspected'] ?? false) && $tableRowCount >= 3) {
+            return [
+                'type' => 'body_text_with_table',
+                'should_number' => true,
+                'confidence' => 0.79,
+                'reason' => null,
                 'metrics' => $metrics,
             ];
         }

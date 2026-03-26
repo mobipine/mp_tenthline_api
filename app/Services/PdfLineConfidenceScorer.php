@@ -21,6 +21,15 @@ class PdfLineConfidenceScorer
 
         $minimumLineConfidence = max(0.10, min(0.95, (float) config('line_numbering.minimum_line_confidence', 0.48)));
         $pageConfidenceFloor = max(0.10, min(0.95, (float) config('line_numbering.minimum_page_confidence', 0.58)));
+        $inlineClauseMarkerIds = $this->inlineClauseMarkerLineIds($lines, $layout);
+        $tableRowLineIds = array_fill_keys(array_values(array_filter(
+            is_array($layout['table_row_line_ids'] ?? null) ? $layout['table_row_line_ids'] : [],
+            static fn (mixed $lineId): bool => is_string($lineId) && trim($lineId) !== ''
+        )), true);
+        $tableRowAnchors = array_values(array_filter(
+            is_array($layout['table_row_anchors'] ?? null) ? $layout['table_row_anchors'] : [],
+            static fn (mixed $anchor): bool => is_array($anchor)
+        ));
         $bodyRegion = is_array($layout['body_region'] ?? null) ? $layout['body_region'] : [
             'left' => 0.0,
             'right' => (float) ($layout['page_width'] ?? 0.0),
@@ -46,7 +55,17 @@ class PdfLineConfidenceScorer
             $lineId = (string) ($line['id'] ?? '');
             $artifact = $lineId !== '' ? ($artifactMarks[$lineId] ?? null) : null;
 
-            $scored = $this->scoreLine($line, $previous, $next, $bodyRegion, $layout, $artifact, $medianSpacing);
+            $scored = $this->scoreLine(
+                $line,
+                $previous,
+                $next,
+                $bodyRegion,
+                $layout,
+                $artifact,
+                $medianSpacing,
+                isset($tableRowLineIds[$lineId]),
+                isset($inlineClauseMarkerIds[$lineId])
+            );
             $scoredLines[] = $scored;
 
             if (($scored['suppressed_reason'] ?? null) !== null) {
@@ -69,6 +88,38 @@ class PdfLineConfidenceScorer
                 'x_end' => (float) $scored['x_end'],
             ];
             $trustedLines[] = $scored;
+        }
+
+        if ($tableRowAnchors !== []) {
+            foreach ($tableRowAnchors as $rowIndex => $rowAnchor) {
+                $rowY = (float) ($rowAnchor['y'] ?? 0.0);
+                if ($this->hasNearbyAnchor($trustedAnchors, $rowY)) {
+                    continue;
+                }
+
+                $anchor = [
+                    'y' => $rowY,
+                    'x_start' => (float) ($rowAnchor['x_start'] ?? 0.0),
+                    'x_end' => (float) ($rowAnchor['x_end'] ?? 0.0),
+                ];
+                $trustedAnchors[] = $anchor;
+                $trustedLines[] = [
+                    'id' => (string) ($rowAnchor['id'] ?? ('table-row-' . ($rowIndex + 1))),
+                    'text' => (string) ($rowAnchor['text'] ?? ''),
+                    'x_start' => $anchor['x_start'],
+                    'x_end' => $anchor['x_end'],
+                    'y' => $anchor['y'],
+                    'confidence' => 0.78,
+                    'spacing_consistency' => 0.6,
+                    'inside_body_region' => true,
+                    'horizontal_overlap_ratio' => 1.0,
+                    'suppressed_reason' => null,
+                    'region' => 'table',
+                ];
+            }
+
+            usort($trustedAnchors, static fn (array $a, array $b): int => ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0)));
+            usort($trustedLines, static fn (array $a, array $b): int => ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0)));
         }
 
         $pageConfidence = $this->pageConfidence($page, $layout, $trustedLines, $lines, $pageConfidenceFloor);
@@ -99,7 +150,9 @@ class PdfLineConfidenceScorer
         array $bodyRegion,
         array $layout,
         ?string $artifact,
-        float $medianSpacing
+        float $medianSpacing,
+        bool $belongsToTableRow,
+        bool $isInlineClauseMarker
     ): array {
         $lineWidth = max(0.0, ((float) ($line['x_end'] ?? 0.0)) - ((float) ($line['x_start'] ?? 0.0)));
         $lineCenter = (((float) ($line['x_start'] ?? 0.0)) + ((float) ($line['x_end'] ?? 0.0))) / 2;
@@ -134,7 +187,13 @@ class PdfLineConfidenceScorer
             $outsideDominantColumn = $dominantColumn !== null
                 && ($lineCenter < ((float) ($dominantColumn['left'] ?? 0.0)) || $lineCenter > ((float) ($dominantColumn['right'] ?? 0.0)));
 
-            if ((bool) ($layout['multi_column_suspected'] ?? false) && $outsideDominantColumn) {
+            if ($isInlineClauseMarker) {
+                $score -= 0.20;
+                $suppressedReason = 'structured_content';
+            } elseif ($belongsToTableRow) {
+                $score -= 0.18;
+                $suppressedReason = 'structured_content';
+            } elseif ((bool) ($layout['multi_column_suspected'] ?? false) && $outsideDominantColumn) {
                 $score -= 0.20;
                 $suppressedReason = 'structured_content';
             }
@@ -197,7 +256,7 @@ class PdfLineConfidenceScorer
         }
 
         if ((bool) ($layout['table_suspected'] ?? false)) {
-            $score -= 0.08;
+            $score -= 0.03;
         }
 
         if (((int) ($page['page_rotation'] ?? 0)) !== 0) {
@@ -324,5 +383,118 @@ class PdfLineConfidenceScorer
         }
 
         return $wideGaps >= 2;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $lines
+     * @return array<string, bool>
+     */
+    private function inlineClauseMarkerLineIds(array $lines, array $layout): array
+    {
+        if ((bool) ($layout['multi_column_suspected'] ?? false) || (bool) ($layout['table_suspected'] ?? false)) {
+            return [];
+        }
+
+        $pageWidth = max(1.0, (float) ($layout['page_width'] ?? 0.0));
+        $lineHeights = array_map(static fn (array $line): float => max(1.0, (float) ($line['height'] ?? 0.0)), $lines);
+        $baselineTolerance = max(2.0, min(5.0, $this->median($lineHeights) * 0.28));
+        $markerIds = [];
+
+        foreach ($lines as $line) {
+            $lineId = trim((string) ($line['id'] ?? ''));
+            if ($lineId === '' || ! $this->looksLikeInlineClauseMarker($line, $pageWidth)) {
+                continue;
+            }
+
+            foreach ($lines as $peer) {
+                if ($peer === $line) {
+                    continue;
+                }
+
+                $peerY = (float) ($peer['y'] ?? 0.0);
+                $lineY = (float) ($line['y'] ?? 0.0);
+                if (abs($peerY - $lineY) > $baselineTolerance) {
+                    continue;
+                }
+
+                if ((float) ($peer['x_start'] ?? 0.0) <= ((float) ($line['x_end'] ?? 0.0) + 10.0)) {
+                    continue;
+                }
+
+                if (! $this->isSubstantialBodyLine($peer, $pageWidth)) {
+                    continue;
+                }
+
+                $markerIds[$lineId] = true;
+                break;
+            }
+        }
+
+        return $markerIds;
+    }
+
+    private function looksLikeInlineClauseMarker(array $line, float $pageWidth): bool
+    {
+        $text = trim((string) ($line['text'] ?? ''));
+        if ($text === '' || preg_match('/^\d{1,3}(?:[.,]\d{1,3})*[.,)]?$/', $text) !== 1) {
+            return false;
+        }
+
+        $width = max(0.0, ((float) ($line['x_end'] ?? 0.0)) - ((float) ($line['x_start'] ?? 0.0)));
+        $charCount = (int) ($line['char_count'] ?? mb_strlen($text));
+        $words = is_array($line['words'] ?? null) ? $line['words'] : [];
+
+        if ($width > max(42.0, $pageWidth * 0.13)) {
+            return false;
+        }
+
+        if ($charCount > 10 || count($words) > 2) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isSubstantialBodyLine(array $line, float $pageWidth): bool
+    {
+        $text = trim((string) ($line['text'] ?? ''));
+        $width = max(0.0, ((float) ($line['x_end'] ?? 0.0)) - ((float) ($line['x_start'] ?? 0.0)));
+        $charCount = (int) ($line['char_count'] ?? mb_strlen($text));
+        $alphaCount = preg_match_all('/\p{L}/u', $text);
+
+        return $width >= max(120.0, $pageWidth * 0.28)
+            && $charCount >= 12
+            && $alphaCount >= 4;
+    }
+
+    /**
+     * @param  list<array{y: float, x_start: float, x_end: float}>  $trustedAnchors
+     */
+    private function hasNearbyAnchor(array $trustedAnchors, float $y): bool
+    {
+        foreach ($trustedAnchors as $anchor) {
+            if (abs(((float) ($anchor['y'] ?? 0.0)) - $y) <= 4.0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function median(array $numbers): float
+    {
+        if ($numbers === []) {
+            return 0.0;
+        }
+
+        sort($numbers, SORT_NUMERIC);
+        $count = count($numbers);
+        $mid = intdiv($count, 2);
+
+        if ($count % 2 === 0) {
+            return ($numbers[$mid - 1] + $numbers[$mid]) / 2;
+        }
+
+        return $numbers[$mid];
     }
 }
