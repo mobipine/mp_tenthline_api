@@ -23,7 +23,8 @@ class PdfLineExtractor
         private readonly PdfPageLayoutAnalyzer $pageLayoutAnalyzer,
         private readonly PdfRepeatedArtifactDetector $repeatedArtifactDetector,
         private readonly PdfLineConfidenceScorer $confidenceScorer,
-        private readonly PdfOcrLineGridBuilder $ocrLineGridBuilder
+        private readonly PdfOcrLineGridBuilder $ocrLineGridBuilder,
+        private readonly PdfScannedPageClassifier $scannedPageClassifier
     ) {}
 
     /**
@@ -465,26 +466,42 @@ class PdfLineExtractor
             $pageConfidence = (float) ($scored['page_confidence'] ?? 0.0);
             $pageConfidenceLabel = $scored['page_confidence_label'] ?? 'low';
             $lowConfidenceReason = $scored['low_confidence_reason'] ?? null;
+            $scannedPageClassification = null;
 
             if (($page['engine'] ?? null) === 'ocr') {
-                $ocrGrid = $this->ocrLineGridBuilder->build(
+                $trustedLines = is_array($scored['trusted_lines'] ?? null) ? $scored['trusted_lines'] : [];
+                $scannedPageClassification = $this->scannedPageClassifier->classify(
                     $page,
                     $layout,
-                    is_array($scored['trusted_lines'] ?? null) ? $scored['trusted_lines'] : [],
+                    $trustedLines,
                     $trustedAnchors
                 );
 
-                if ($ocrGrid !== null) {
-                    $trustedAnchors = $ocrGrid['anchors'];
-                    $ocrGridDiagnostics = $ocrGrid['diagnostics'];
-                    $pageConfidence = max(
-                        $pageConfidence,
-                        max(0.62, (float) config('line_numbering.minimum_page_confidence', 0.58))
+                if (($scannedPageClassification['should_number'] ?? false) === true) {
+                    $ocrGrid = $this->ocrLineGridBuilder->build(
+                        $page,
+                        $layout,
+                        $trustedLines,
+                        $trustedAnchors
                     );
-                    $pageConfidenceLabel = $pageConfidence >= max(0.75, (float) config('line_numbering.minimum_page_confidence', 0.58) + 0.12)
-                        ? 'high'
-                        : 'medium';
-                    $lowConfidenceReason = null;
+
+                    if ($ocrGrid !== null) {
+                        $trustedAnchors = $ocrGrid['anchors'];
+                        $ocrGridDiagnostics = $ocrGrid['diagnostics'];
+                        $pageConfidence = max(
+                            $pageConfidence,
+                            max(0.62, (float) config('line_numbering.minimum_page_confidence', 0.58))
+                        );
+                        $pageConfidenceLabel = $pageConfidence >= max(0.75, (float) config('line_numbering.minimum_page_confidence', 0.58) + 0.12)
+                            ? 'high'
+                            : 'medium';
+                        $lowConfidenceReason = null;
+                    }
+                } else {
+                    $trustedAnchors = [];
+                    $pageConfidence = min($pageConfidence, 0.32);
+                    $pageConfidenceLabel = 'low';
+                    $lowConfidenceReason = 'scanned_page_' . ($scannedPageClassification['reason'] ?? 'not_numbered');
                 }
             }
 
@@ -512,6 +529,7 @@ class PdfLineExtractor
                 'used_ocr_fallback' => (bool) ($page['used_ocr_fallback'] ?? false),
                 'used_ocr_grid_reconstruction' => $ocrGridDiagnostics !== null,
                 'ocr_grid_diagnostics' => $ocrGridDiagnostics,
+                'scanned_page_classification' => $scannedPageClassification,
                 'trusted_anchors' => $trustedAnchors,
                 'scored_lines' => $scored['scored_lines'] ?? [],
             ];
@@ -597,12 +615,14 @@ class PdfLineExtractor
         @unlink($temporaryBase);
 
         $imageBase = $temporaryBase . '-page';
-        $imagePath = $imageBase . '-1.png';
+        $imagePath = $imageBase . '.png';
+        $renderDpi = max(180, min(600, (int) config('line_numbering.ocr_render_dpi', 300)));
         $pdftoppmCommand = sprintf(
-            '%s -f %d -l %d -png %s %s 2>/dev/null',
+            '%s -f %d -l %d -singlefile -gray -r %d -png %s %s 2>/dev/null',
             escapeshellcmd((string) config('line_numbering.pdftoppm_binary', 'pdftoppm')),
             $pageNo,
             $pageNo,
+            $renderDpi,
             escapeshellarg($inputPath),
             escapeshellarg($imageBase)
         );
@@ -615,24 +635,93 @@ class PdfLineExtractor
 
         [$imageWidth, $imageHeight] = getimagesize($imagePath) ?: [0, 0];
 
-        $tsv = shell_exec(sprintf(
-            '%s %s stdout tsv --psm 6 2>/dev/null',
-            escapeshellcmd((string) config('line_numbering.tesseract_binary', 'tesseract')),
-            escapeshellarg($imagePath)
-        ));
-
-        @unlink($imagePath);
-
-        if (! is_string($tsv) || trim($tsv) === '') {
-            return null;
-        }
-
         if ($pageWidth <= 0 || $pageHeight <= 0) {
             $pageWidth = max(72.0, (float) $imageWidth);
             $pageHeight = max(72.0, (float) $imageHeight);
         }
 
-        $rawLines = $this->buildRawOcrLinesFromTsv($tsv, $pageNo, max(1.0, (float) $imageWidth), max(1.0, (float) $imageHeight), $pageWidth, $pageHeight);
+        $candidateImages = [
+            ['variant' => 'original', 'path' => $imagePath],
+        ];
+
+        if ((bool) config('line_numbering.ocr_try_enhanced_variant', true)) {
+            $enhancedImagePath = $this->createEnhancedOcrImage($imagePath);
+            if ($enhancedImagePath !== null) {
+                $candidateImages[] = ['variant' => 'enhanced', 'path' => $enhancedImagePath];
+            }
+        }
+
+        $bestCandidate = null;
+        $candidateDiagnostics = [];
+
+        foreach ($candidateImages as $candidateImage) {
+            foreach ($this->ocrPsmCandidates() as $psm) {
+                $tsv = $this->runTesseractTsv((string) $candidateImage['path'], $psm);
+                if ($tsv === null) {
+                    continue;
+                }
+
+                $rawLines = $this->buildRawOcrLinesFromTsv(
+                    $tsv,
+                    $pageNo,
+                    max(1.0, (float) $imageWidth),
+                    max(1.0, (float) $imageHeight),
+                    $pageWidth,
+                    $pageHeight
+                );
+
+                if ($rawLines === []) {
+                    continue;
+                }
+
+                $candidatePage = [
+                    'page_no' => $pageNo,
+                    'engine' => 'ocr',
+                    'page_width' => $pageWidth,
+                    'page_height' => $pageHeight,
+                    'page_rotation' => 0,
+                    'raw_lines' => $rawLines,
+                ];
+                $evaluation = $this->evaluateOcrCandidate($candidatePage);
+                $classification = $evaluation['classification'];
+                $classificationMetrics = is_array($classification['metrics'] ?? null) ? $classification['metrics'] : [];
+
+                $summary = [
+                    'variant' => $candidateImage['variant'],
+                    'psm' => $psm,
+                    'raw_lines_detected' => count($rawLines),
+                    'trusted_lines_detected' => count($evaluation['scored']['trusted_anchors'] ?? []),
+                    'page_confidence' => round((float) ($evaluation['scored']['page_confidence'] ?? 0.0), 4),
+                    'page_confidence_label' => $evaluation['scored']['page_confidence_label'] ?? 'low',
+                    'classification_type' => $classification['type'] ?? 'unknown',
+                    'classification_should_number' => (bool) ($classification['should_number'] ?? false),
+                    'selection_score' => round((float) $evaluation['selection_score'], 4),
+                    'body_coverage_ratio' => round((float) ($classificationMetrics['body_coverage_ratio'] ?? 0.0), 4),
+                    'bottom_whitespace_ratio' => round((float) ($classificationMetrics['bottom_whitespace_ratio'] ?? 0.0), 4),
+                    'dense_body_signal_ratio' => round((float) ($classificationMetrics['dense_body_signal_ratio'] ?? 0.0), 4),
+                ];
+                $candidateDiagnostics[] = $summary;
+
+                if ($bestCandidate === null
+                    || (float) $evaluation['selection_score'] > (float) $bestCandidate['selection_score']) {
+                    $bestCandidate = [
+                        'page' => $candidatePage,
+                        'summary' => $summary,
+                        'selection_score' => (float) $evaluation['selection_score'],
+                    ];
+                }
+            }
+        }
+
+        foreach ($candidateImages as $candidateImage) {
+            @unlink((string) ($candidateImage['path'] ?? ''));
+        }
+
+        if ($bestCandidate === null) {
+            return null;
+        }
+
+        usort($candidateDiagnostics, static fn (array $a, array $b): int => ((float) ($b['selection_score'] ?? 0.0)) <=> ((float) ($a['selection_score'] ?? 0.0)));
 
         return [
             'page_no' => $pageNo,
@@ -640,10 +729,13 @@ class PdfLineExtractor
             'page_width' => $pageWidth,
             'page_height' => $pageHeight,
             'page_rotation' => 0,
-            'raw_lines' => $rawLines,
+            'raw_lines' => $bestCandidate['page']['raw_lines'],
             'diagnostic' => [
                 'engine' => 'ocr',
-                'raw_lines_detected' => count($rawLines),
+                'raw_lines_detected' => count($bestCandidate['page']['raw_lines']),
+                'ocr_render_dpi' => $renderDpi,
+                'ocr_selected_candidate' => $bestCandidate['summary'],
+                'ocr_candidates' => $candidateDiagnostics,
             ],
         ];
     }
@@ -660,7 +752,9 @@ class PdfLineExtractor
 
         array_shift($rows);
         $words = [];
+        $groupedWords = [];
         $baselineRatio = max(0.65, min(0.92, (float) config('line_numbering.ocr_baseline_ratio', self::DEFAULT_OCR_BASELINE_RATIO)));
+        $minimumWordConfidence = max(0.0, min(100.0, (float) config('line_numbering.ocr_word_min_confidence', 22.0)));
 
         foreach ($rows as $row) {
             $columns = str_getcsv($row, "\t");
@@ -670,7 +764,7 @@ class PdfLineExtractor
 
             $text = trim((string) ($columns[11] ?? ''));
             $confidence = (float) ($columns[10] ?? 0.0);
-            if ($text === '' || $confidence < 15.0) {
+            if ($text === '' || $confidence < $minimumWordConfidence) {
                 continue;
             }
 
@@ -697,47 +791,139 @@ class PdfLineExtractor
                 'bottom' => $wordBottom,
                 'height' => max(1.0, $wordTop - $wordBottom),
             ];
+
+            $ocrPage = (int) ($columns[1] ?? 0);
+            $ocrBlock = (int) ($columns[2] ?? 0);
+            $ocrParagraph = (int) ($columns[3] ?? 0);
+            $ocrLine = (int) ($columns[4] ?? 0);
+            if ($ocrPage > 0 && $ocrBlock > 0 && $ocrLine > 0) {
+                $groupKey = implode(':', [$ocrPage, $ocrBlock, $ocrParagraph, $ocrLine]);
+                $groupedWords[$groupKey][] = $words[array_key_last($words)];
+            }
         }
 
         if ($words === []) {
             return [];
         }
 
-        $heights = array_map(static fn (array $word): float => (float) $word['height'], $words);
-        $tolerance = max(6.0, $this->median($heights) * 0.55);
-
-        usort($words, static function (array $a, array $b) use ($tolerance): int {
-            $dy = ((float) $b['y']) - ((float) $a['y']);
-            if (abs($dy) > $tolerance) {
-                return $dy > 0 ? 1 : -1;
-            }
-
-            return ((float) $a['x_start']) <=> ((float) $b['x_start']);
-        });
-
-        $lines = [];
-        $currentLine = [];
-        $currentY = null;
-
-        foreach ($words as $word) {
-            if ($currentY === null || abs(((float) $word['y']) - $currentY) > $tolerance) {
-                if ($currentLine !== []) {
-                    $lines[] = $this->buildRawLineFromWords($currentLine, $pageNo, 'ocr', count($lines));
-                }
-                $currentLine = [$word];
-                $currentY = (float) $word['y'];
-
+        $lineGroups = [];
+        foreach ($groupedWords as $groupKey => $groupWords) {
+            if ($groupWords === []) {
                 continue;
             }
 
-            $currentLine[] = $word;
+            $lineGroups[] = $this->buildRawLineFromWords($groupWords, $pageNo, 'ocr', count($lineGroups));
         }
 
-        if ($currentLine !== []) {
-            $lines[] = $this->buildRawLineFromWords($currentLine, $pageNo, 'ocr', count($lines));
+        usort($lineGroups, static function (array $a, array $b): int {
+            $dy = ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0));
+
+            return $dy !== 0 ? $dy : (((float) ($a['x_start'] ?? 0.0)) <=> ((float) ($b['x_start'] ?? 0.0)));
+        });
+
+        if (count($lineGroups) >= max(2, (int) floor(count($words) / 10))) {
+            return $lineGroups;
         }
 
-        return $lines;
+        $heights = array_map(static fn (array $word): float => (float) $word['height'], $words);
+        $tolerance = max(6.0, $this->median($heights) * 0.55);
+
+        return $this->groupSegmentsIntoRawLines($words, $tolerance, $pageNo, 'ocr');
+    }
+
+    /**
+     * @param  array<string, mixed>  $page
+     * @return array{layout: array<string, mixed>, scored: array<string, mixed>, classification: array<string, mixed>, selection_score: float}
+     */
+    private function evaluateOcrCandidate(array $page): array
+    {
+        $layout = $this->pageLayoutAnalyzer->analyze($page, []);
+        $scored = $this->confidenceScorer->scorePage($page, $layout, []);
+        $classification = $this->scannedPageClassifier->classify(
+            $page,
+            $layout,
+            is_array($scored['trusted_lines'] ?? null) ? $scored['trusted_lines'] : [],
+            is_array($scored['trusted_anchors'] ?? null) ? $scored['trusted_anchors'] : []
+        );
+        $metrics = is_array($classification['metrics'] ?? null) ? $classification['metrics'] : [];
+
+        $selectionScore = ((float) ($scored['page_confidence'] ?? 0.0) * 100.0)
+            + (count($scored['trusted_anchors'] ?? []) * 2.8)
+            + min(18.0, count($page['raw_lines'] ?? []) * 0.55)
+            + (((bool) ($classification['should_number'] ?? false)) ? 18.0 : -8.0)
+            + (((float) ($metrics['dense_body_signal_ratio'] ?? 0.0)) * 18.0)
+            - (((float) ($metrics['short_line_ratio'] ?? 0.0)) * 12.0)
+            - (((float) ($metrics['bottom_whitespace_ratio'] ?? 0.0)) * 22.0);
+
+        if ((bool) ($layout['multi_column_suspected'] ?? false)) {
+            $selectionScore -= 10.0;
+        }
+
+        if ((bool) ($layout['table_suspected'] ?? false)) {
+            $selectionScore -= 10.0;
+        }
+
+        return [
+            'layout' => $layout,
+            'scored' => $scored,
+            'classification' => $classification,
+            'selection_score' => round($selectionScore, 4),
+        ];
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function ocrPsmCandidates(): array
+    {
+        $values = array_values(array_unique(array_filter(
+            array_map(
+                static fn (mixed $value): int => (int) $value,
+                is_array(config('line_numbering.ocr_psm_candidates', [6])) ? config('line_numbering.ocr_psm_candidates', [6]) : [6]
+            ),
+            static fn (int $value): bool => $value > 0
+        )));
+
+        return $values !== [] ? $values : [6];
+    }
+
+    private function runTesseractTsv(string $imagePath, int $psm): ?string
+    {
+        $tsv = shell_exec(sprintf(
+            '%s %s stdout tsv --psm %d 2>/dev/null',
+            escapeshellcmd((string) config('line_numbering.tesseract_binary', 'tesseract')),
+            escapeshellarg($imagePath),
+            $psm
+        ));
+
+        return is_string($tsv) && trim($tsv) !== '' ? $tsv : null;
+    }
+
+    private function createEnhancedOcrImage(string $imagePath): ?string
+    {
+        if (! function_exists('imagecreatefrompng')
+            || ! function_exists('imagefilter')
+            || ! function_exists('imagepng')) {
+            return null;
+        }
+
+        $image = @imagecreatefrompng($imagePath);
+        if ($image === false) {
+            return null;
+        }
+
+        imagefilter($image, IMG_FILTER_GRAYSCALE);
+        imagefilter($image, IMG_FILTER_CONTRAST, -35);
+        @imagefilter($image, IMG_FILTER_BRIGHTNESS, 8);
+        if (defined('IMG_FILTER_MEAN_REMOVAL')) {
+            @imagefilter($image, IMG_FILTER_MEAN_REMOVAL);
+        }
+
+        $enhancedPath = preg_replace('/\.png$/i', '-enhanced.png', $imagePath) ?: ($imagePath . '-enhanced.png');
+        $written = @imagepng($image, $enhancedPath);
+        imagedestroy($image);
+
+        return $written && is_file($enhancedPath) ? $enhancedPath : null;
     }
 
     /**

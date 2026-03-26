@@ -246,6 +246,54 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
+    public function test_it_skips_non_body_scanned_pages_instead_of_drawing_a_fake_grid(): void
+    {
+        if (! $this->commandExists('pdftotext')) {
+            $this->markTestSkipped('pdftotext command not available on this machine.');
+        }
+
+        if (! $this->commandExists('tesseract') || ! $this->commandExists('pdftoppm')) {
+            $this->markTestSkipped('OCR commands are not available on this machine.');
+        }
+
+        if (! function_exists('imagecreatetruecolor') || ! function_exists('imagettftext')) {
+            $this->markTestSkipped('GD with TrueType font support is not available on this machine.');
+        }
+
+        config([
+            'line_numbering.extractor_engine' => 'poppler',
+            'line_numbering.debug_overlay' => false,
+            'line_numbering.enable_diagnostics' => true,
+            'line_numbering.enable_ocr_fallback' => true,
+            'line_numbering.ocr_trigger_page_confidence' => 0.95,
+            'line_numbering.low_confidence_page_strategy' => 'number',
+        ]);
+
+        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_ocr_service_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_ocr_service_' . uniqid() . '.pdf';
+        $this->createImageOnlyPdf($inputPath, $this->serviceBlockLines());
+
+        $service = app(PdfLineNumberService::class);
+        $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8);
+
+        $diagnostics = $service->getLastRunDiagnostics();
+        $pageRun = $diagnostics['pages'][1] ?? [];
+        $pageDiagnostics = $pageRun['diagnostics'] ?? [];
+        $classification = $pageDiagnostics['scanned_page_classification'] ?? [];
+        $text = shell_exec(sprintf('pdftotext %s - 2>/dev/null', escapeshellarg($outputPath)));
+        $text = is_string($text) ? $text : '';
+
+        $this->assertSame('ocr', $pageDiagnostics['engine'] ?? null);
+        $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
+        $this->assertFalse((bool) ($classification['should_number'] ?? true));
+        $this->assertSame('skip_scanned_non_body', $pageRun['placement_mode'] ?? null);
+        $this->assertSame(0, (int) ($pageRun['labels_drawn'] ?? 0));
+        $this->assertStringNotContainsString('-10', $text);
+
+        @unlink($inputPath);
+        @unlink($outputPath);
+    }
+
     /**
      * @return list<string>
      */
@@ -258,6 +306,32 @@ class PdfLineNumberServiceTest extends TestCase
         }
 
         return $lines;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function serviceBlockLines(): array
+    {
+        return [
+            'DRAWN AND FILED BY:',
+            'V.A. NYAMODI & COMPANY',
+            'ADVOCATES',
+            'HSE NO 7 DUPLEX APARTMENTS,',
+            'LOWERHILL ROAD, UPPERHILL',
+            'P.O BOX 51431-00200',
+            'NAIROBI',
+            'info@nyamodi.co.ke',
+            'Tel: (+254) (20) 2715542',
+            'COPIES TO BE SERVED UPON:',
+            'MOHAMMED MUIGAI, LLP',
+            'MM CHAMBERS',
+            'K-REP CENTRE, 4TH FLOOR',
+            'P.O. BOX 61323-00200',
+            'NAIROBI',
+            'info@mohammedmuigai.com',
+            'Tel: 0722 851 641',
+        ];
     }
 
     private function createSamplePdf(string $path, int $lineCount): void

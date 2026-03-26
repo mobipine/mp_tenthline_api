@@ -31,6 +31,16 @@ return [
     'tesseract_binary' => env('PDF_LINE_TESSERACT_BINARY', 'tesseract'),
     'poppler_baseline_ratio' => (float) env('PDF_LINE_POPPLER_BASELINE_RATIO', 0.78),
     'ocr_baseline_ratio' => (float) env('PDF_LINE_OCR_BASELINE_RATIO', 0.82),
+    'ocr_render_dpi' => (int) env('PDF_LINE_OCR_RENDER_DPI', 300),
+    'ocr_word_min_confidence' => (float) env('PDF_LINE_OCR_WORD_MIN_CONFIDENCE', 22.0),
+    'ocr_psm_candidates' => array_values(array_filter(
+        array_map(
+            static fn (string $value): int => (int) trim($value),
+            explode(',', (string) env('PDF_LINE_OCR_PSM_CANDIDATES', '6,4,11'))
+        ),
+        static fn (int $value): bool => $value > 0
+    )),
+    'ocr_try_enhanced_variant' => (bool) env('PDF_LINE_OCR_TRY_ENHANCED_VARIANT', true),
 
     /*
     |--------------------------------------------------------------------------

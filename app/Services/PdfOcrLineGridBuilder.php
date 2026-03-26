@@ -39,6 +39,16 @@ class PdfOcrLineGridBuilder
             return null;
         }
 
+        if (! $this->shouldReconstructGrid(
+            $trustedLines,
+            $bodyRegion,
+            max(1.0, (float) ($layout['page_width'] ?? 0.0)),
+            max(1.0, (float) ($layout['page_height'] ?? 0.0)),
+            $spacing
+        )) {
+            return null;
+        }
+
         $phase = $this->estimatePhase($trustedLines, $spacing);
         $top = (float) ($bodyRegion['top'] ?? 0.0);
         $bottom = (float) ($bodyRegion['bottom'] ?? 0.0);
@@ -108,6 +118,57 @@ class PdfOcrLineGridBuilder
                 'snap_tolerance_pt' => round($snapTolerance, 3),
             ],
         ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $trustedLines
+     * @param  array{left: float, right: float, top: float, bottom: float}  $bodyRegion
+     */
+    private function shouldReconstructGrid(
+        array $trustedLines,
+        array $bodyRegion,
+        float $pageWidth,
+        float $pageHeight,
+        float $spacing
+    ): bool {
+        $widthRatios = array_map(
+            static fn (array $line): float => max(
+                0.0,
+                min(1.0, ((((float) ($line['x_end'] ?? 0.0)) - ((float) ($line['x_start'] ?? 0.0))) / max(1.0, $pageWidth)))
+            ),
+            $trustedLines
+        );
+        $medianWidthRatio = $this->median($widthRatios);
+        $wideLineCount = count(array_filter($widthRatios, static fn (float $ratio): bool => $ratio >= 0.34));
+        $wideLineRatio = $wideLineCount / max(1, count($trustedLines));
+        $bodyCoverageRatio = max(
+            0.0,
+            min(1.0, (((float) ($bodyRegion['top'] ?? 0.0)) - ((float) ($bodyRegion['bottom'] ?? 0.0))) / max(1.0, $pageHeight))
+        );
+        $bottomWhitespaceRatio = max(0.0, min(1.0, ((float) ($bodyRegion['bottom'] ?? 0.0)) / max(1.0, $pageHeight)));
+        [, $largeGapRatio] = $this->gapMetrics($trustedLines, $spacing);
+
+        if ($medianWidthRatio < 0.34) {
+            return false;
+        }
+
+        if ($wideLineRatio < 0.55) {
+            return false;
+        }
+
+        if ($bodyCoverageRatio < 0.40) {
+            return false;
+        }
+
+        if ($bottomWhitespaceRatio > 0.18 && count($trustedLines) < 18) {
+            return false;
+        }
+
+        if ($largeGapRatio > 0.18) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -246,6 +307,44 @@ class PdfOcrLineGridBuilder
         }
 
         return $bestIndex;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $trustedLines
+     * @return array{0: float, 1: float}
+     */
+    private function gapMetrics(array $trustedLines, float $spacing): array
+    {
+        if (count($trustedLines) < 2 || $spacing <= 0.0) {
+            return [0.0, 0.0];
+        }
+
+        $lines = $trustedLines;
+        usort($lines, static fn (array $a, array $b): int => ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0)));
+
+        $largestGapRatio = 0.0;
+        $largeGapCount = 0;
+        $gapCount = 0;
+
+        for ($index = 0, $max = count($lines) - 1; $index < $max; $index++) {
+            $delta = ((float) ($lines[$index]['y'] ?? 0.0)) - ((float) ($lines[$index + 1]['y'] ?? 0.0));
+            if ($delta <= 0.5) {
+                continue;
+            }
+
+            $gapCount++;
+            $gapRatio = $delta / $spacing;
+            $largestGapRatio = max($largestGapRatio, $gapRatio);
+
+            if ($gapRatio > 1.9) {
+                $largeGapCount++;
+            }
+        }
+
+        return [
+            round($largestGapRatio, 4),
+            $gapCount > 0 ? round($largeGapCount / $gapCount, 4) : 0.0,
+        ];
     }
 
     private function enabled(): bool

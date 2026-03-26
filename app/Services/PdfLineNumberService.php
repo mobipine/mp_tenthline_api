@@ -98,11 +98,20 @@ class PdfLineNumberService
                     ? ($extractorDiagnostics['pages'][$pageNo] ?? null)
                     : null;
                 $pageConfidence = (float) ($pageDiagnostics['page_confidence'] ?? 1.0);
+                $scannedPageClassification = is_array($pageDiagnostics['scanned_page_classification'] ?? null)
+                    ? $pageDiagnostics['scanned_page_classification']
+                    : null;
+                $skipScannedNonBodyPage = ($pageDiagnostics['engine'] ?? null) === 'ocr'
+                    && is_array($scannedPageClassification)
+                    && (($scannedPageClassification['should_number'] ?? true) === false);
                 $lowConfidence = $pageDiagnostics !== null
                     && (
                         ($pageDiagnostics['page_confidence_label'] ?? null) === 'low'
                         || $pageConfidence < $minimumPageConfidence
                     );
+                if ($skipScannedNonBodyPage) {
+                    $lowConfidence = true;
+                }
                 $lineAnchors = $lineAnchorsPerPage[$pageNo] ?? [];
                 $labelsDrawn = 0;
                 $placementMode = 'trusted';
@@ -111,7 +120,10 @@ class PdfLineNumberService
                     $this->drawPageDiagnosticsOverlay($pdf, $pageHeight, $pageDiagnostics);
                 }
 
-                if ($lowConfidence && $lowConfidenceStrategy === 'skip') {
+                if ($skipScannedNonBodyPage) {
+                    $placementMode = 'skip_scanned_non_body';
+                    $skippedLowConfidencePages++;
+                } elseif ($lowConfidence && $lowConfidenceStrategy === 'skip') {
                     $placementMode = 'skip_low_confidence';
                     $skippedLowConfidencePages++;
                 } elseif ($lowConfidence && $lowConfidenceStrategy === 'fixed_grid') {
