@@ -27,6 +27,14 @@ class PdfJob extends Model
         'page_count',
         'margin',
         'font_size_pt',
+        'ocr_provider',
+        'ocr_status',
+        'ocr_job_id',
+        'ocr_started_at',
+        'ocr_completed_at',
+        'ocr_result_path',
+        'ocr_error_message',
+        'ocr_diagnostics',
         'storage_deleted_at',
     ];
 
@@ -38,6 +46,9 @@ class PdfJob extends Model
         'line_interval' => 'integer',
         'page_count' => 'integer',
         'font_size_pt' => 'integer',
+        'ocr_started_at' => 'datetime',
+        'ocr_completed_at' => 'datetime',
+        'ocr_diagnostics' => 'array',
         'storage_deleted_at' => 'datetime',
     ];
 

@@ -6,19 +6,33 @@ use App\Events\PdfJobUpdated;
 use App\Models\PdfJob;
 use App\Notifications\PdfJob\PdfJobCompletedNotification;
 use App\Services\PdfLineNumberService;
+use App\Support\PdfJobPayloadFactory;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 
 class ProcessPdfJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    /** @var array<string, mixed> */
+    protected array $currentLiveState = [];
+
+    protected int $currentProgress = 0;
+
+    protected int $currentProcessedPages = 0;
+
+    protected int $currentTotalPages = 0;
+
+    protected ?int $currentEtaSeconds = null;
 
     public int $tries = 2;
 
@@ -47,25 +61,58 @@ class ProcessPdfJob implements ShouldQueue
             return;
         }
 
-        DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update([
-            'status' => 'processing',
-        ]);
-        $this->broadcastJobSnapshot();
-
         $job = PdfJob::find($this->pdfJobId);
         if (! $job) {
             Log::warning('[LegalLine] ProcessPdfJob: PdfJob record not found', ['job_id' => $this->pdfJobId]);
             return;
         }
 
+        $this->currentTotalPages = max(0, (int) ($job->page_count ?? $job->total_pages ?? 0));
+        $this->currentProcessedPages = 0;
+        $this->currentProgress = 3;
+        $this->currentEtaSeconds = null;
+
+        $this->publishProcessingState(
+            'analyzing_document',
+            'Analyzing document',
+            'We are reading the PDF and preparing the line-numbering layout.',
+            3,
+            [
+                'detail' => $this->currentTotalPages > 0 ? "{$this->currentTotalPages} pages detected" : null,
+                'total_pages' => $this->currentTotalPages > 0 ? $this->currentTotalPages : null,
+                'processed_pages' => 0,
+                'eta_seconds' => null,
+            ]
+        );
+
         Log::info('[LegalLine] ProcessPdfJob: Processing with options', [
             'job_id' => $this->pdfJobId,
             'line_interval' => $job->line_interval ?? 10,
             'margin' => $job->margin ?? 'left',
             'font_size_pt' => $job->font_size_pt ?? 8,
+            'textract_enabled' => (bool) config('textract.enabled', false),
         ]);
 
         $startTime = microtime(true);
+        $pageProgressFloor = 12;
+
+        $processingStateCallback = function (array $state) use (&$pageProgressFloor): void {
+            $progress = isset($state['progress']) && is_numeric($state['progress'])
+                ? max(0, min(96, (int) round((float) $state['progress'])))
+                : null;
+
+            if ($progress !== null) {
+                $pageProgressFloor = max($pageProgressFloor, $progress);
+            }
+
+            $this->publishProcessingState(
+                (string) ($state['phase'] ?? 'processing'),
+                (string) ($state['label'] ?? 'Processing document'),
+                (string) ($state['message'] ?? 'We are still working on your document.'),
+                $progress,
+                $state
+            );
+        };
 
         try {
             $totalPages = $pdfService->addLineNumbers(
@@ -74,19 +121,37 @@ class ProcessPdfJob implements ShouldQueue
                 (int) ($job->line_interval ?? 10),
                 $job->margin ?? 'left',
                 $job->font_size_pt ?? 8,
-                function (int $pageNo, int $total) use ($startTime) {
-                    $progress = $total > 0 ? (int) round(($pageNo / $total) * 100) : 0;
+                function (int $pageNo, int $total) use ($startTime, &$pageProgressFloor) {
+                    $progress = $this->mapPageProgress($pageNo, $total, $pageProgressFloor);
                     $elapsed = (int) (microtime(true) - $startTime);
                     $eta = $pageNo > 0 && $elapsed > 0
                         ? (int) (($elapsed / $pageNo) * ($total - $pageNo))
                         : 0;
 
-                    DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update([
+                    $this->currentTotalPages = $total;
+                    $this->currentProcessedPages = $pageNo;
+                    $this->currentProgress = $progress;
+                    $this->currentEtaSeconds = $eta;
+                    $this->currentLiveState = [
+                        'phase' => 'adding_line_numbers',
+                        'label' => 'Adding line numbers',
+                        'message' => 'We are placing line numbers across the document.',
+                        'detail' => "Page {$pageNo} of {$total}",
+                    ];
+
+                    $update = [
                         'total_pages' => $total,
                         'processed_pages' => $pageNo,
                         'progress' => $progress,
                         'eta_seconds' => $eta,
-                    ]);
+                        'updated_at' => now(),
+                    ];
+
+                    if ($this->supportsOcrTrackingColumns()) {
+                        $update['ocr_diagnostics'] = ['live' => $this->liveStatePayload()];
+                    }
+
+                    DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($update);
 
                     Log::info('[LegalLine] ProcessPdfJob: Progress updated', [
                         'job_id' => $this->pdfJobId,
@@ -97,18 +162,32 @@ class ProcessPdfJob implements ShouldQueue
                     ]);
 
                     $this->broadcastProgress($progress, $pageNo, $total, $eta);
-                }
+                },
+                [
+                    'pdf_job_id' => $this->pdfJobId,
+                    'processing_state_callback' => $processingStateCallback,
+                ]
             );
 
+            $runDiagnostics = $pdfService->getLastRunDiagnostics();
+            $ocrAttributes = $this->buildOcrPersistenceAttributes($runDiagnostics);
+
             $relativeOutput = "pdf-jobs/{$this->pdfJobId}/output.pdf";
-            DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update([
+            $completionUpdate = [
                 'status' => 'completed',
                 'total_pages' => $totalPages,
                 'processed_pages' => $totalPages,
                 'progress' => 100,
                 'eta_seconds' => 0,
                 'output_path' => $relativeOutput,
-            ]);
+                'updated_at' => now(),
+            ];
+
+            if ($ocrAttributes !== []) {
+                $completionUpdate = array_merge($completionUpdate, $ocrAttributes);
+            }
+
+            DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($completionUpdate);
 
             $duration = round(microtime(true) - $startTime, 2);
             Log::info('[LegalLine] ProcessPdfJob: Job completed successfully', [
@@ -116,6 +195,7 @@ class ProcessPdfJob implements ShouldQueue
                 'total_pages' => $totalPages,
                 'duration_seconds' => $duration,
                 'output_path' => $relativeOutput,
+                'ocr_summary' => $runDiagnostics['extractor_summary']['ocr'] ?? null,
             ]);
 
             $this->notifyUserJobCompleted($job->fresh() ?? $job);
@@ -135,10 +215,18 @@ class ProcessPdfJob implements ShouldQueue
     protected function failJob(string $message): void
     {
         Log::warning('[LegalLine] ProcessPdfJob: Marking job as failed', ['job_id' => $this->pdfJobId, 'error_message' => $message]);
-        DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update([
+        $update = [
             'status' => 'failed',
             'error_message' => $message,
-        ]);
+            'updated_at' => now(),
+        ];
+
+        if ($this->supportsOcrTrackingColumns()) {
+            $update['ocr_status'] = 'failed';
+            $update['ocr_error_message'] = $message;
+        }
+
+        DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($update);
         $this->broadcastJobSnapshot();
     }
 
@@ -154,7 +242,7 @@ class ProcessPdfJob implements ShouldQueue
 
     protected function broadcastProgress(int $progress, int $processedPages, int $totalPages, int $etaSeconds): void
     {
-        event(new PdfJobUpdated([
+        event(new PdfJobUpdated(PdfJobPayloadFactory::withProcessingState([
             'id' => $this->pdfJobId,
             'status' => 'processing',
             'progress' => $progress,
@@ -163,7 +251,10 @@ class ProcessPdfJob implements ShouldQueue
             'eta_seconds' => $etaSeconds,
             'error_message' => null,
             'download_url' => null,
-        ]));
+            'updated_at' => now()->toIso8601String(),
+        ], [
+            'live' => $this->liveStatePayload(),
+        ])));
     }
 
     protected function broadcastJobSnapshot(): void
@@ -173,18 +264,7 @@ class ProcessPdfJob implements ShouldQueue
             return;
         }
 
-        event(new PdfJobUpdated([
-            'id' => $job->id,
-            'status' => $job->status,
-            'progress' => (int) $job->progress,
-            'processed_pages' => (int) $job->processed_pages,
-            'total_pages' => (int) $job->total_pages,
-            'eta_seconds' => $job->eta_seconds !== null ? (int) $job->eta_seconds : null,
-            'error_message' => $job->error_message,
-            'download_url' => $job->status === 'completed' && $job->output_path
-                ? url("/api/job/{$job->id}/download")
-                : null,
-        ]));
+        event(new PdfJobUpdated(PdfJobPayloadFactory::fromModel($job)));
     }
 
     protected function notifyUserJobCompleted(PdfJob $job): void
@@ -208,5 +288,235 @@ class ProcessPdfJob implements ShouldQueue
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $runDiagnostics
+     * @return array<string, mixed>
+     */
+    protected function buildOcrPersistenceAttributes(array $runDiagnostics): array
+    {
+        if (! $this->supportsOcrTrackingColumns()) {
+            return [];
+        }
+
+        $ocr = is_array($runDiagnostics['extractor_summary']['ocr'] ?? null)
+            ? $runDiagnostics['extractor_summary']['ocr']
+            : [];
+        $textract = is_array($ocr['textract'] ?? null) ? $ocr['textract'] : [];
+        $local = is_array($ocr['local'] ?? null) ? $ocr['local'] : [];
+        $candidatePages = is_array($ocr['candidate_pages'] ?? null) ? $ocr['candidate_pages'] : [];
+        $pagesReplaced = is_array($ocr['pages_replaced'] ?? null) ? $ocr['pages_replaced'] : [];
+        $providersUsed = array_values(array_filter(
+            is_array($ocr['providers_used'] ?? null) ? $ocr['providers_used'] : [],
+            static fn (mixed $value): bool => is_string($value) && $value !== ''
+        ));
+
+        $provider = null;
+        if (($textract['pages_replaced'] ?? []) !== []) {
+            $provider = 'textract';
+        } elseif (($local['pages_replaced'] ?? []) !== []) {
+            $provider = 'tesseract';
+        } elseif ($providersUsed !== []) {
+            $provider = (string) $providersUsed[0];
+        }
+
+        $status = 'not_needed';
+        if ($candidatePages !== []) {
+            if ($pagesReplaced === $candidatePages || count($pagesReplaced) === count($candidatePages)) {
+                $status = 'completed';
+            } elseif ($pagesReplaced !== []) {
+                $status = 'partial';
+            } else {
+                $status = (($textract['error'] ?? null) || (($local['pages_attempted'] ?? []) !== []))
+                    ? 'failed'
+                    : 'not_needed';
+            }
+        }
+
+        $errorMessage = $textract['error'] ?? null;
+
+        return [
+            'ocr_provider' => $provider,
+            'ocr_status' => $status,
+            'ocr_job_id' => $textract['job_id'] ?? null,
+            'ocr_started_at' => $this->normalizeDatabaseTimestamp($textract['started_at'] ?? null),
+            'ocr_completed_at' => $this->normalizeDatabaseTimestamp($textract['completed_at'] ?? null),
+            'ocr_result_path' => $textract['result_path'] ?? null,
+            'ocr_error_message' => $errorMessage,
+            'ocr_diagnostics' => $ocr !== [] ? $ocr : null,
+        ];
+    }
+
+    protected function normalizeDatabaseTimestamp(mixed $value): ?string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return Carbon::instance($value)->utc()->format('Y-m-d H:i:s');
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->utc()->format('Y-m-d H:i:s');
+        } catch (\Throwable $e) {
+            Log::warning('[LegalLine] ProcessPdfJob: unable to normalize OCR timestamp', [
+                'job_id' => $this->pdfJobId,
+                'value' => $value,
+                'message' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    protected function supportsOcrTrackingColumns(): bool
+    {
+        static $supportsColumns;
+
+        if ($supportsColumns !== null) {
+            return $supportsColumns;
+        }
+
+        try {
+            $supportsColumns = Schema::hasColumns('pdf_jobs', [
+                'ocr_provider',
+                'ocr_status',
+                'ocr_job_id',
+                'ocr_started_at',
+                'ocr_completed_at',
+                'ocr_result_path',
+                'ocr_error_message',
+                'ocr_diagnostics',
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[LegalLine] ProcessPdfJob: unable to inspect OCR tracking columns', [
+                'job_id' => $this->pdfJobId,
+                'message' => $e->getMessage(),
+            ]);
+
+            $supportsColumns = false;
+        }
+
+        return $supportsColumns;
+    }
+
+    protected function publishProcessingState(
+        string $phase,
+        string $label,
+        string $message,
+        ?int $progress = null,
+        array $meta = []
+    ): void {
+        $this->currentLiveState = [
+            'phase' => $phase,
+            'label' => $label,
+            'message' => $message,
+            'detail' => is_string($meta['detail'] ?? null) ? trim((string) $meta['detail']) : null,
+        ];
+
+        if ($progress !== null) {
+            $this->currentProgress = max($this->currentProgress, $progress);
+        }
+
+        if (array_key_exists('processed_pages', $meta) && is_numeric($meta['processed_pages'])) {
+            $this->currentProcessedPages = max(0, (int) $meta['processed_pages']);
+        }
+
+        if (array_key_exists('total_pages', $meta) && is_numeric($meta['total_pages'])) {
+            $this->currentTotalPages = max(0, (int) $meta['total_pages']);
+        }
+
+        if (array_key_exists('eta_seconds', $meta)) {
+            $this->currentEtaSeconds = is_numeric($meta['eta_seconds']) ? (int) $meta['eta_seconds'] : null;
+        }
+
+        $update = [
+            'status' => 'processing',
+            'progress' => $this->currentProgress,
+            'processed_pages' => $this->currentProcessedPages,
+            'total_pages' => $this->currentTotalPages,
+            'eta_seconds' => $this->currentEtaSeconds,
+            'updated_at' => now(),
+        ];
+
+        if ($this->supportsOcrTrackingColumns()) {
+            if (is_string($meta['ocr_provider'] ?? null) && trim((string) $meta['ocr_provider']) !== '') {
+                $update['ocr_provider'] = trim((string) $meta['ocr_provider']);
+            }
+
+            if (is_string($meta['ocr_status'] ?? null) && trim((string) $meta['ocr_status']) !== '') {
+                $update['ocr_status'] = trim((string) $meta['ocr_status']);
+            }
+
+            if (is_string($meta['ocr_job_id'] ?? null) && trim((string) $meta['ocr_job_id']) !== '') {
+                $update['ocr_job_id'] = trim((string) $meta['ocr_job_id']);
+            }
+
+            if (array_key_exists('ocr_started_at', $meta)) {
+                $update['ocr_started_at'] = $this->normalizeDatabaseTimestamp($meta['ocr_started_at']);
+            }
+
+            if (array_key_exists('ocr_error_message', $meta)) {
+                $update['ocr_error_message'] = $meta['ocr_error_message'];
+            }
+
+            $update['ocr_diagnostics'] = ['live' => $this->liveStatePayload()];
+        }
+
+        DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($update);
+
+        Log::info('[LegalLine] ProcessPdfJob: live processing state updated', [
+            'job_id' => $this->pdfJobId,
+            'phase' => $phase,
+            'label' => $label,
+            'message' => $message,
+            'detail' => $this->currentLiveState['detail'],
+            'progress' => $this->currentProgress,
+            'processed_pages' => $this->currentProcessedPages,
+            'total_pages' => $this->currentTotalPages,
+        ]);
+
+        event(new PdfJobUpdated(PdfJobPayloadFactory::withProcessingState([
+            'id' => $this->pdfJobId,
+            'status' => 'processing',
+            'progress' => $this->currentProgress,
+            'processed_pages' => $this->currentProcessedPages,
+            'total_pages' => $this->currentTotalPages,
+            'eta_seconds' => $this->currentEtaSeconds,
+            'error_message' => null,
+            'download_url' => null,
+            'updated_at' => now()->toIso8601String(),
+        ], [
+            'live' => $this->liveStatePayload(),
+        ])));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function liveStatePayload(): array
+    {
+        return array_filter([
+            'phase' => $this->currentLiveState['phase'] ?? null,
+            'label' => $this->currentLiveState['label'] ?? null,
+            'message' => $this->currentLiveState['message'] ?? null,
+            'detail' => $this->currentLiveState['detail'] ?? null,
+            'updated_at' => now()->toIso8601String(),
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    protected function mapPageProgress(int $pageNo, int $totalPages, int $floor): int
+    {
+        if ($totalPages <= 0) {
+            return max(0, min(96, $floor));
+        }
+
+        $start = max(12, min(90, $floor));
+        $range = max(0, 96 - $start);
+        $pageRatio = max(0, min(1, $pageNo / $totalPages));
+
+        return max($start, min(96, (int) round($start + ($pageRatio * $range))));
     }
 }
