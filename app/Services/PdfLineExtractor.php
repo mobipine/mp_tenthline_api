@@ -1674,7 +1674,11 @@ class PdfLineExtractor
 
     private function commandExists(string $command): bool
     {
-        $path = shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
+        try {
+            $path = @shell_exec(sprintf('command -v %s 2>/dev/null', escapeshellarg($command)));
+        } catch (\Throwable) {
+            return false;
+        }
 
         return is_string($path) && trim($path) !== '';
     }

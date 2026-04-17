@@ -162,7 +162,7 @@ class TextractJobCoordinatorTest extends TestCase
             ]));
 
         $factory = Mockery::mock(TextractClientFactory::class);
-        $factory->shouldReceive('make')->twice()->andReturn($client);
+        $factory->shouldReceive('make')->once()->andReturn($client);
 
         $coordinator = new TextractJobCoordinator(
             $factory,

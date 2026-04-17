@@ -2,6 +2,7 @@
 
 namespace App\Services\Scanned;
 
+use Aws\Textract\TextractClient;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -227,7 +228,8 @@ class TextractJobCoordinator
             'ocr_status' => 'starting_job',
         ]);
 
-        $response = $this->clientFactory->make()->startDocumentTextDetection($payload)->toArray();
+        $client = $this->clientFactory->make();
+        $response = $client->startDocumentTextDetection($payload)->toArray();
         $jobId = trim((string) ($response['JobId'] ?? ''));
 
         if ($jobId === '') {
@@ -266,9 +268,11 @@ class TextractJobCoordinator
     /**
      * @return array<string, mixed>
      */
-    public function checkStatus(string $jobId): array
+    public function checkStatus(string $jobId, ?TextractClient $client = null): array
     {
-        $response = $this->clientFactory->make()->getDocumentTextDetection([
+        $client ??= $this->clientFactory->make();
+
+        $response = $client->getDocumentTextDetection([
             'JobId' => $jobId,
             'MaxResults' => 1,
         ])->toArray();
@@ -289,9 +293,10 @@ class TextractJobCoordinator
         $maxAttempts = max(1, (int) ($options['max_poll_attempts'] ?? config('textract.max_poll_attempts', 120)));
         $delaySeconds = max(0, (int) ($options['poll_delay_seconds'] ?? config('textract.poll_delay_seconds', 10)));
         $lastStatus = null;
+        $client = $this->clientFactory->make();
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
-            $status = $this->checkStatus($jobId);
+            $status = $this->checkStatus($jobId, $client);
             $lastStatus = $status;
 
             Log::info('[LegalLine] TextractJobCoordinator: poll status', [
@@ -340,6 +345,7 @@ class TextractJobCoordinator
         $status = 'UNKNOWN';
         $warnings = [];
         $pages = 0;
+        $client = $this->clientFactory->make();
 
         do {
             $payload = [
@@ -351,7 +357,7 @@ class TextractJobCoordinator
                 $payload['NextToken'] = $nextToken;
             }
 
-            $response = $this->clientFactory->make()->getDocumentTextDetection($payload)->toArray();
+            $response = $client->getDocumentTextDetection($payload)->toArray();
             $status = (string) ($response['JobStatus'] ?? $status);
             $warnings = is_array($response['Warnings'] ?? null) ? $response['Warnings'] : $warnings;
             $pages = max($pages, (int) ($response['DocumentMetadata']['Pages'] ?? 0));
@@ -711,6 +717,7 @@ class TextractJobCoordinator
         $pages = 0;
         $blockCount = 0;
         $stagedPagePaths = [];
+        $client = $this->clientFactory->make();
 
         do {
             $payload = [
@@ -722,7 +729,7 @@ class TextractJobCoordinator
                 $payload['NextToken'] = $nextToken;
             }
 
-            $response = $this->clientFactory->make()->getDocumentTextDetection($payload)->toArray();
+            $response = $client->getDocumentTextDetection($payload)->toArray();
             $status = (string) ($response['JobStatus'] ?? $status);
             $warnings = is_array($response['Warnings'] ?? null) ? $response['Warnings'] : $warnings;
             $pages = max($pages, (int) ($response['DocumentMetadata']['Pages'] ?? 0));
@@ -744,15 +751,18 @@ class TextractJobCoordinator
                 $blockCount++;
             }
 
+            $nextToken = isset($response['NextToken']) && is_string($response['NextToken']) && $response['NextToken'] !== ''
+                ? $response['NextToken']
+                : null;
+
             foreach ($blocksByPage as $pageNo => $pageBlocks) {
                 $stagePath = $stagingDirectory.DIRECTORY_SEPARATOR.'page-'.str_pad((string) $pageNo, 6, '0', STR_PAD_LEFT).'.jsonl';
                 $this->appendStagedPageBlocks($stagePath, $pageBlocks);
                 $stagedPagePaths[$pageNo] = $stagePath;
             }
 
-            $nextToken = isset($response['NextToken']) && is_string($response['NextToken']) && $response['NextToken'] !== ''
-                ? $response['NextToken']
-                : null;
+            unset($blocksByPage, $response);
+            gc_collect_cycles();
         } while ($nextToken !== null);
 
         ksort($stagedPagePaths);
