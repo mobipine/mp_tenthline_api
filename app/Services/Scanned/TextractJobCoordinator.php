@@ -30,7 +30,7 @@ class TextractJobCoordinator
         $completion = $this->awaitCompletion($started['job_id'], $pdfJobId, $options);
 
         if (! in_array($completion['status'], ['SUCCEEDED', 'PARTIAL_SUCCESS'], true)) {
-            throw new RuntimeException('Textract job did not complete successfully: ' . ($completion['message'] ?? $completion['status']));
+            throw new RuntimeException('Textract job did not complete successfully: '.($completion['message'] ?? $completion['status']));
         }
 
         $this->reportProgress($options, [
@@ -45,8 +45,11 @@ class TextractJobCoordinator
             'ocr_started_at' => $startedAt->toISOString(),
         ]);
 
+        $normalizationOptions = $options;
+        $normalizationOptions['pdf_job_id'] = $pdfJobId;
+
         $normalizedPages = $this->withConfiguredMemoryLimit(
-            fn (): array => $this->fetchNormalizedPages($started['job_id'], $pageDimensions, $options),
+            fn (): array => $this->fetchNormalizedPages($started['job_id'], $pageDimensions, $normalizationOptions),
             $pdfJobId,
             $started['job_id']
         );
@@ -185,7 +188,7 @@ class TextractJobCoordinator
             fclose($stream);
         }
 
-        $clientRequestToken = (string) ($options['client_request_token'] ?? sha1('textract:' . $pdfJobId));
+        $clientRequestToken = (string) ($options['client_request_token'] ?? sha1('textract:'.$pdfJobId));
         $payload = [
             'ClientRequestToken' => substr($clientRequestToken, 0, 64),
             'JobTag' => substr((string) ($options['job_tag'] ?? $pdfJobId), 0, 64),
@@ -324,7 +327,7 @@ class TextractJobCoordinator
             }
         }
 
-        throw new RuntimeException('Timed out waiting for Textract job [' . $jobId . '] after ' . $maxAttempts . ' attempts.');
+        throw new RuntimeException('Timed out waiting for Textract job ['.$jobId.'] after '.$maxAttempts.' attempts.');
     }
 
     /**
@@ -397,7 +400,8 @@ class TextractJobCoordinator
             'ocr_job_id' => $jobId,
         ]);
 
-        $response = $this->fetchBlocks($jobId);
+        $pdfJobId = trim((string) ($options['pdf_job_id'] ?? $jobId));
+        $response = $this->stageBlocksByPage($jobId, $pdfJobId, $options);
 
         if (! in_array($response['status'], ['SUCCEEDED', 'PARTIAL_SUCCESS'], true)) {
             throw new RuntimeException('Textract job is not ready for normalization.');
@@ -414,7 +418,51 @@ class TextractJobCoordinator
             'ocr_job_id' => $jobId,
         ]);
 
-        $pages = $this->lineNormalizer->normalize($response['blocks'], $pageDimensions, $options);
+        $pages = [];
+        $expectedPages = max(
+            (int) ($response['pages'] ?? 0),
+            count($pageDimensions),
+            ($response['staged_page_paths'] ?? []) !== []
+                ? max(array_keys($response['staged_page_paths']))
+                : 0
+        );
+
+        try {
+            foreach ($response['staged_page_paths'] as $pageNo => $stagePath) {
+                $pageBlocks = $this->loadStagedPageBlocks($stagePath);
+                $pages[$pageNo] = $this->lineNormalizer->normalizePageBlocks($pageNo, $pageBlocks, $pageDimensions, $options);
+
+                if ($expectedPages > 0 && ($pageNo === 1 || $pageNo === $expectedPages || $pageNo % 25 === 0)) {
+                    $this->reportProgress($options, [
+                        'phase' => 'ocr_normalizing_results',
+                        'label' => 'Lining up the page text',
+                        'message' => 'We are lining up the page text so the line numbers follow the document correctly.',
+                        'detail' => "Normalized {$pageNo} of {$expectedPages} pages.",
+                        'progress' => min(49, 47 + (int) floor(($pageNo / max(1, $expectedPages)) * 2)),
+                        'ocr_provider' => 'textract',
+                        'ocr_status' => 'normalizing_results',
+                        'ocr_job_id' => $jobId,
+                    ]);
+                }
+            }
+
+            for ($pageNo = 1; $pageNo <= $expectedPages; $pageNo++) {
+                if (isset($pages[$pageNo])) {
+                    continue;
+                }
+
+                $pages[$pageNo] = $this->lineNormalizer->normalizePageBlocks(
+                    $pageNo,
+                    [['Id' => 'page-'.$pageNo, 'BlockType' => 'PAGE', 'Page' => $pageNo]],
+                    $pageDimensions,
+                    $options
+                );
+            }
+        } finally {
+            $this->cleanupStagedDirectory((string) $response['staging_directory']);
+        }
+
+        ksort($pages);
 
         Log::info('[LegalLine] TextractJobCoordinator: normalized Textract pages', [
             'job_id' => $jobId,
@@ -432,13 +480,34 @@ class TextractJobCoordinator
     {
         $disk = (string) ($options['result_disk'] ?? config('textract.result_disk', 'local'));
         $path = $this->buildResultPath($pdfJobId, $options);
-        $payload = json_encode($pages, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $stream = fopen('php://temp/maxmemory:1048576', 'w+');
 
-        if ($payload === false) {
-            throw new RuntimeException('Unable to encode normalized Textract pages as JSON.');
+        if ($stream === false) {
+            throw new RuntimeException('Unable to open a temporary stream for normalized Textract pages.');
         }
 
-        Storage::disk($disk)->put($path, $payload);
+        try {
+            ksort($pages);
+            fwrite($stream, '{');
+            $first = true;
+
+            foreach ($pages as $pageNo => $page) {
+                $encodedPage = json_encode($page, JSON_UNESCAPED_SLASHES);
+                if ($encodedPage === false) {
+                    throw new RuntimeException('Unable to encode normalized Textract page ['.$pageNo.'] as JSON.');
+                }
+
+                fwrite($stream, $first ? "\n" : ",\n");
+                fwrite($stream, '  '.json_encode((string) $pageNo).': '.$encodedPage);
+                $first = false;
+            }
+
+            fwrite($stream, $first ? "}\n" : "\n}\n");
+            rewind($stream);
+            Storage::disk($disk)->put($path, $stream);
+        } finally {
+            fclose($stream);
+        }
 
         Log::info('[LegalLine] TextractJobCoordinator: stored normalized pages', [
             'pdf_job_id' => $pdfJobId,
@@ -531,14 +600,22 @@ class TextractJobCoordinator
     {
         $prefix = trim((string) ($options['prefix'] ?? config('textract.prefix', 'textract/input')), '/');
 
-        return $prefix . '/' . $pdfJobId . '/input.pdf';
+        return $prefix.'/'.$pdfJobId.'/input.pdf';
     }
 
     private function buildResultPath(string $pdfJobId, array $options): string
     {
         $prefix = trim((string) ($options['result_prefix'] ?? config('textract.result_prefix', 'pdf-jobs')), '/');
 
-        return $prefix . '/' . $pdfJobId . '/textract-pages.json';
+        return $prefix.'/'.$pdfJobId.'/textract-pages.json';
+    }
+
+    private function buildStagingDirectory(string $pdfJobId, string $jobId, array $options = []): string
+    {
+        $prefix = trim((string) ($options['result_prefix'] ?? config('textract.result_prefix', 'pdf-jobs')), '/');
+        $safeJobId = preg_replace('/[^A-Za-z0-9_-]+/', '-', $jobId) ?: 'textract';
+
+        return $prefix.'/'.$pdfJobId.'/textract-staging-'.$safeJobId;
     }
 
     private function reportProgress(array $options, array $state): void
@@ -560,10 +637,10 @@ class TextractJobCoordinator
 
     private function resolveBucketName(string $disk, array $options): string
     {
-        $bucket = trim((string) ($options['bucket'] ?? config('filesystems.disks.' . $disk . '.bucket', config('textract.bucket', ''))));
+        $bucket = trim((string) ($options['bucket'] ?? config('filesystems.disks.'.$disk.'.bucket', config('textract.bucket', ''))));
 
         if ($bucket === '') {
-            throw new RuntimeException('Textract bucket is not configured for disk [' . $disk . '].');
+            throw new RuntimeException('Textract bucket is not configured for disk ['.$disk.'].');
         }
 
         return $bucket;
@@ -571,6 +648,7 @@ class TextractJobCoordinator
 
     /**
      * @template T
+     *
      * @param  callable(): T  $callback
      * @return T
      */
@@ -582,7 +660,11 @@ class TextractJobCoordinator
         }
 
         $originalLimit = ini_get('memory_limit');
-        $applied = $originalLimit !== false && $originalLimit !== $configuredLimit;
+        $configuredBytes = $this->parseMemoryLimitBytes($configuredLimit);
+        $originalBytes = $this->parseMemoryLimitBytes($originalLimit);
+        $applied = $configuredBytes !== null
+            && $originalBytes !== null
+            && $configuredBytes > $originalBytes;
 
         if ($applied) {
             @ini_set('memory_limit', $configuredLimit);
@@ -592,6 +674,7 @@ class TextractJobCoordinator
                 'job_id' => $jobId,
                 'original_memory_limit' => $originalLimit,
                 'configured_memory_limit' => $configuredLimit,
+                'effective_memory_limit' => ini_get('memory_limit'),
             ]);
         }
 
@@ -602,5 +685,235 @@ class TextractJobCoordinator
                 @ini_set('memory_limit', (string) $originalLimit);
             }
         }
+    }
+
+    /**
+     * @return array{
+     *     status: string,
+     *     warnings: array<int, mixed>,
+     *     pages: int,
+     *     staged_page_paths: array<int, string>,
+     *     block_count: int,
+     *     staging_directory: string
+     * }
+     */
+    private function stageBlocksByPage(string $jobId, string $pdfJobId, array $options = []): array
+    {
+        $stagingDisk = Storage::disk('local');
+        $stagingRelativeDirectory = $this->buildStagingDirectory($pdfJobId, $jobId, $options);
+        $stagingDisk->deleteDirectory($stagingRelativeDirectory);
+        $stagingDisk->makeDirectory($stagingRelativeDirectory);
+        $stagingDirectory = $stagingDisk->path($stagingRelativeDirectory);
+
+        $nextToken = null;
+        $status = 'UNKNOWN';
+        $warnings = [];
+        $pages = 0;
+        $blockCount = 0;
+        $stagedPagePaths = [];
+
+        do {
+            $payload = [
+                'JobId' => $jobId,
+                'MaxResults' => (int) config('textract.max_results', 1000),
+            ];
+
+            if ($nextToken !== null) {
+                $payload['NextToken'] = $nextToken;
+            }
+
+            $response = $this->clientFactory->make()->getDocumentTextDetection($payload)->toArray();
+            $status = (string) ($response['JobStatus'] ?? $status);
+            $warnings = is_array($response['Warnings'] ?? null) ? $response['Warnings'] : $warnings;
+            $pages = max($pages, (int) ($response['DocumentMetadata']['Pages'] ?? 0));
+
+            $blocksByPage = [];
+
+            foreach (($response['Blocks'] ?? []) as $block) {
+                if (! is_array($block)) {
+                    continue;
+                }
+
+                $pageNo = $this->resolveBlockPageNo($block);
+                if ($pageNo === null) {
+                    continue;
+                }
+
+                $blocksByPage[$pageNo] ??= [];
+                $blocksByPage[$pageNo][] = $block;
+                $blockCount++;
+            }
+
+            foreach ($blocksByPage as $pageNo => $pageBlocks) {
+                $stagePath = $stagingDirectory.DIRECTORY_SEPARATOR.'page-'.str_pad((string) $pageNo, 6, '0', STR_PAD_LEFT).'.jsonl';
+                $this->appendStagedPageBlocks($stagePath, $pageBlocks);
+                $stagedPagePaths[$pageNo] = $stagePath;
+            }
+
+            $nextToken = isset($response['NextToken']) && is_string($response['NextToken']) && $response['NextToken'] !== ''
+                ? $response['NextToken']
+                : null;
+        } while ($nextToken !== null);
+
+        ksort($stagedPagePaths);
+
+        Log::info('[LegalLine] TextractJobCoordinator: fetched Textract blocks', [
+            'job_id' => $jobId,
+            'status' => $status,
+            'block_count' => $blockCount,
+            'pages' => $pages,
+            'warnings_count' => count($warnings),
+            'staged_page_count' => count($stagedPagePaths),
+            'staging_directory' => $stagingDirectory,
+        ]);
+
+        return [
+            'status' => $status,
+            'warnings' => $warnings,
+            'pages' => $pages,
+            'staged_page_paths' => $stagedPagePaths,
+            'block_count' => $blockCount,
+            'staging_directory' => $stagingDirectory,
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $blocks
+     */
+    private function appendStagedPageBlocks(string $path, array $blocks): void
+    {
+        $encodedBlocks = [];
+
+        foreach ($blocks as $block) {
+            $encoded = json_encode($block, JSON_UNESCAPED_SLASHES);
+            if ($encoded === false) {
+                throw new RuntimeException('Unable to encode a Textract block for staging.');
+            }
+
+            $encodedBlocks[] = $encoded;
+        }
+
+        if ($encodedBlocks === []) {
+            return;
+        }
+
+        $written = @file_put_contents($path, implode(PHP_EOL, $encodedBlocks).PHP_EOL, FILE_APPEND | LOCK_EX);
+        if ($written === false) {
+            throw new RuntimeException('Unable to persist staged Textract blocks.');
+        }
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadStagedPageBlocks(string $path): array
+    {
+        if (! is_file($path)) {
+            throw new RuntimeException('Staged Textract page file not found.');
+        }
+
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            throw new RuntimeException('Unable to open staged Textract page file.');
+        }
+
+        $blocks = [];
+
+        try {
+            while (($line = fgets($handle)) !== false) {
+                $trimmed = trim($line);
+                if ($trimmed === '') {
+                    continue;
+                }
+
+                $decoded = json_decode($trimmed, true);
+                if (! is_array($decoded)) {
+                    throw new RuntimeException('Staged Textract page file contains invalid JSON.');
+                }
+
+                $blocks[] = $decoded;
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return $blocks;
+    }
+
+    private function cleanupStagedDirectory(string $directory): void
+    {
+        if ($directory === '' || ! is_dir($directory)) {
+            return;
+        }
+
+        $entries = scandir($directory);
+        if (! is_array($entries)) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            $path = $directory.DIRECTORY_SEPARATOR.$entry;
+            if (is_dir($path)) {
+                $this->cleanupStagedDirectory($path);
+
+                continue;
+            }
+
+            @unlink($path);
+        }
+
+        @rmdir($directory);
+    }
+
+    /**
+     * @param  array<string, mixed>  $block
+     */
+    private function resolveBlockPageNo(array $block): ?int
+    {
+        if (! isset($block['Page']) || ! is_numeric($block['Page'])) {
+            return null;
+        }
+
+        $pageNo = (int) $block['Page'];
+
+        return $pageNo > 0 ? $pageNo : null;
+    }
+
+    private function parseMemoryLimitBytes(mixed $value): ?int
+    {
+        if ($value === false || $value === null) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        if ($normalized === '') {
+            return null;
+        }
+
+        if ($normalized === '-1') {
+            return PHP_INT_MAX;
+        }
+
+        $unit = strtolower(substr($normalized, -1));
+        $number = ctype_alpha($unit)
+            ? (float) substr($normalized, 0, -1)
+            : (float) $normalized;
+
+        if ($number < 0) {
+            return null;
+        }
+
+        $multiplier = match ($unit) {
+            'g' => 1024 * 1024 * 1024,
+            'm' => 1024 * 1024,
+            'k' => 1024,
+            default => 1,
+        };
+
+        return (int) round($number * $multiplier);
     }
 }

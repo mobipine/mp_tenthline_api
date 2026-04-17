@@ -15,7 +15,7 @@ class TextractLineNormalizerTest extends TestCase
             'textract.baseline_ratio' => 0.82,
         ]);
 
-        $normalizer = new TextractLineNormalizer(new TextractGeometryMapper());
+        $normalizer = new TextractLineNormalizer(new TextractGeometryMapper);
         $pages = $normalizer->normalize($this->sampleBlocks(), [
             1 => ['width' => 612.0, 'height' => 792.0],
         ]);
@@ -42,7 +42,7 @@ class TextractLineNormalizerTest extends TestCase
 
     public function test_it_preserves_page_shells_when_textract_returns_empty_pages(): void
     {
-        $normalizer = new TextractLineNormalizer(new TextractGeometryMapper());
+        $normalizer = new TextractLineNormalizer(new TextractGeometryMapper);
         $pages = $normalizer->normalize([
             ['Id' => 'page-1', 'BlockType' => 'PAGE', 'Page' => 1],
         ], [
@@ -53,6 +53,26 @@ class TextractLineNormalizerTest extends TestCase
         $this->assertSame([], $pages[1]['raw_lines']);
         $this->assertSame(0, $pages[1]['diagnostic']['textract_line_blocks_seen']);
         $this->assertSame(0, $pages[1]['diagnostic']['textract_lines_retained']);
+    }
+
+    public function test_it_can_normalize_a_single_textract_page_in_isolation(): void
+    {
+        config([
+            'textract.minimum_line_confidence' => 85.0,
+            'textract.baseline_ratio' => 0.82,
+        ]);
+
+        $normalizer = new TextractLineNormalizer(new TextractGeometryMapper);
+        $page = $normalizer->normalizePageBlocks(1, $this->sampleBlocks(), [
+            1 => ['width' => 612.0, 'height' => 792.0],
+        ]);
+
+        $this->assertSame(1, $page['page_no']);
+        $this->assertSame('ocr', $page['engine']);
+        $this->assertSame('textract', $page['ocr_provider']);
+        $this->assertCount(1, $page['raw_lines']);
+        $this->assertSame('Hello world', $page['raw_lines'][0]['text']);
+        $this->assertCount(2, $page['raw_lines'][0]['words']);
     }
 
     /**
