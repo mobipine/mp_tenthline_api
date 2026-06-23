@@ -45,7 +45,7 @@ class TextractHealthCheckCommand extends Command
             $this->line('S3 key: ' . $s3Summary['key']);
             $this->line('S3 size: ' . $s3Summary['size'] . ' bytes');
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] TextractHealthCheckCommand: S3 smoke check failed', [
+            Log::warning('[TenthLine] TextractHealthCheckCommand: S3 smoke check failed', [
                 'source_disk' => $sourceDisk,
                 'bucket' => $bucket,
                 'message' => $e->getMessage(),
@@ -109,7 +109,7 @@ class TextractHealthCheckCommand extends Command
             $this->line('Normalized lines: ' . $lineCount);
             $this->line('Result path: ' . (string) ($run['result_path'] ?? 'n/a'));
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] TextractHealthCheckCommand: Textract smoke test failed', [
+            Log::warning('[TenthLine] TextractHealthCheckCommand: Textract smoke test failed', [
                 'job_id' => $jobId,
                 'message' => $e->getMessage(),
             ]);
@@ -194,7 +194,7 @@ class TextractHealthCheckCommand extends Command
             try {
                 Storage::disk($resultDisk)->delete($resultPath);
             } catch (\Throwable $e) {
-                Log::warning('[LegalLine] TextractHealthCheckCommand: failed to delete health-check result artifact', [
+                Log::warning('[TenthLine] TextractHealthCheckCommand: failed to delete health-check result artifact', [
                     'result_disk' => $resultDisk,
                     'result_path' => $resultPath,
                     'message' => $e->getMessage(),
@@ -207,7 +207,7 @@ class TextractHealthCheckCommand extends Command
             try {
                 Storage::disk($sourceDisk)->delete($sourceKey);
             } catch (\Throwable $e) {
-                Log::warning('[LegalLine] TextractHealthCheckCommand: failed to delete health-check source artifact', [
+                Log::warning('[TenthLine] TextractHealthCheckCommand: failed to delete health-check source artifact', [
                     'source_disk' => $sourceDisk,
                     'source_key' => $sourceKey,
                     'message' => $e->getMessage(),

@@ -24,7 +24,7 @@ class UploadController extends Controller
     public function store(Request $request, AppSettings $settings): JsonResponse
     {
         $paymentsEnabled = (bool) $settings->enable_payment;
-        Log::info('[LegalLine] upload.store.received', [
+        Log::info('[TenthLine] upload.store.received', [
             'enable_payment' => $paymentsEnabled,
             'simulation_mode' => ! $paymentsEnabled,
             'line_interval' => $request->input('line_interval'),
@@ -47,7 +47,7 @@ class UploadController extends Controller
         $file = $request->file('file');
 
         if ($file->getClientOriginalExtension() !== 'pdf') {
-            Log::warning('[LegalLine] upload.store.invalid_extension', [
+            Log::warning('[TenthLine] upload.store.invalid_extension', [
                 'reference' => $reference,
                 'extension' => $file->getClientOriginalExtension(),
             ]);
@@ -88,13 +88,13 @@ class UploadController extends Controller
 
         if ($requiresPayment) {
             if (! $reference) {
-                Log::warning('[LegalLine] upload.store.missing_payment_reference');
+                Log::warning('[TenthLine] upload.store.missing_payment_reference');
                 return response()->json(['message' => 'Payment reference required.'], 422);
             }
 
             $payment = Payment::where('reference', $reference)->first();
             if (! $payment || $payment->status !== 'completed') {
-                Log::warning('[LegalLine] upload.store.invalid_payment', [
+                Log::warning('[TenthLine] upload.store.invalid_payment', [
                     'reference' => $reference,
                     'payment_found' => (bool) $payment,
                     'payment_status' => $payment?->status,
@@ -103,7 +103,7 @@ class UploadController extends Controller
             }
 
             if ($requestUser && $payment->user_id && (int) $requestUser->id !== (int) $payment->user_id) {
-                Log::warning('[LegalLine] upload.store.forbidden_payment_user_mismatch', [
+                Log::warning('[TenthLine] upload.store.forbidden_payment_user_mismatch', [
                     'reference' => $reference,
                     'payment_user_id' => $payment->user_id,
                     'request_user_id' => $requestUser->id,
@@ -112,7 +112,7 @@ class UploadController extends Controller
             }
 
             if ($payment->pdf_job_id) {
-                Log::warning('[LegalLine] upload.store.payment_already_used', [
+                Log::warning('[TenthLine] upload.store.payment_already_used', [
                     'reference' => $reference,
                     'payment_id' => $payment->id,
                     'pdf_job_id' => $payment->pdf_job_id,
@@ -121,7 +121,7 @@ class UploadController extends Controller
             }
 
             if ((int) $payment->page_count !== $pageCount) {
-                Log::warning('[LegalLine] upload.store.page_count_mismatch', [
+                Log::warning('[TenthLine] upload.store.page_count_mismatch', [
                     'payment_id' => $payment->id,
                     'payment_page_count' => (int) $payment->page_count,
                     'uploaded_page_count' => $pageCount,
@@ -132,7 +132,7 @@ class UploadController extends Controller
                 ], 422);
             }
         } else {
-            Log::info('[LegalLine] upload.store.zero_amount_payment_skipped', [
+            Log::info('[TenthLine] upload.store.zero_amount_payment_skipped', [
                 'user_id' => $requestUser?->id,
                 'page_count' => $pageCount,
                 'unit_price' => $unitPrice,
@@ -154,7 +154,7 @@ class UploadController extends Controller
             $job->payment_id = $payment->id;
         }
         $job->save();
-        Log::info('[LegalLine] upload.store.job_created', [
+        Log::info('[TenthLine] upload.store.job_created', [
             'job_id' => $job->id,
             'payment_id' => $payment?->id,
             'reference' => $reference,
@@ -167,7 +167,7 @@ class UploadController extends Controller
 
         $dir = "pdf-jobs/{$job->id}";
         $storedPath = $file->storeAs($dir, 'input.pdf', 'local');
-        Log::info('[LegalLine] upload.store.file_saved', [
+        Log::info('[TenthLine] upload.store.file_saved', [
             'job_id' => $job->id,
             'stored_path' => $storedPath,
         ]);
@@ -176,14 +176,14 @@ class UploadController extends Controller
 
         if ($payment) {
             $payment->update(['pdf_job_id' => $job->id]);
-            Log::info('[LegalLine] upload.store.payment_linked_to_job', [
+            Log::info('[TenthLine] upload.store.payment_linked_to_job', [
                 'payment_id' => $payment->id,
                 'job_id' => $job->id,
             ]);
         }
 
         ProcessPdfJob::dispatch($job->id);
-        Log::info('[LegalLine] upload.store.dispatch_async', [
+        Log::info('[TenthLine] upload.store.dispatch_async', [
             'job_id' => $job->id,
             'enable_payment' => $paymentsEnabled,
             'simulation_mode' => ! $paymentsEnabled,

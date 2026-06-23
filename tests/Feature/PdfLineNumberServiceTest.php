@@ -25,8 +25,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_right_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_right_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_right_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_right_' . uniqid() . '.pdf';
         $this->createSamplePdf($inputPath, 28);
 
         $service = app(PdfLineNumberService::class);
@@ -60,8 +60,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_left_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_left_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_left_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_left_' . uniqid() . '.pdf';
         $this->createSamplePdf($inputPath, 28);
 
         $service = app(PdfLineNumberService::class);
@@ -95,8 +95,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_headers_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_headers_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_headers_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_headers_' . uniqid() . '.pdf';
 
         $this->createPdf($inputPath, [
             $this->legalPage($this->bodyLines('P1', 20), 'Case No. 100 of 2026', 'Advocates for the Plaintiff', 1),
@@ -136,8 +136,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_short_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_short_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_short_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_short_' . uniqid() . '.pdf';
 
         $bodyLines = $this->bodyLines('SHORT', 20);
         $bodyLines[9] = 'SHORT10';
@@ -176,8 +176,8 @@ class PdfLineNumberServiceTest extends TestCase
             'textract.enabled' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_table_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_table_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_table_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_table_' . uniqid() . '.pdf';
 
         $this->createPdf($inputPath, [
             $this->tableHeavyPage(),
@@ -216,8 +216,8 @@ class PdfLineNumberServiceTest extends TestCase
             'textract.enabled' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_table_rows_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_table_rows_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_table_rows_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_table_rows_' . uniqid() . '.pdf';
 
         $this->createPdf($inputPath, [[
             'texts' => [
@@ -282,9 +282,9 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $basePath = sys_get_temp_dir() . '/legalline_test_service_input_qpdf_base_' . uniqid() . '.pdf';
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_qpdf_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_qpdf_' . uniqid() . '.pdf';
+        $basePath = sys_get_temp_dir() . '/tenthline_test_service_input_qpdf_base_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_qpdf_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_qpdf_' . uniqid() . '.pdf';
         $this->createSamplePdf($basePath, 28);
         $this->createObjectStreamPdf($basePath, $inputPath);
 
@@ -330,8 +330,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.ocr_trigger_page_confidence' => 0.95,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_ocr_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_ocr_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_ocr_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_ocr_' . uniqid() . '.pdf';
         $this->createImageOnlyPdf($inputPath, $this->bodyLines('OCR', 20));
 
         $service = app(PdfLineNumberService::class);
@@ -370,8 +370,8 @@ class PdfLineNumberServiceTest extends TestCase
             'textract.enabled' => true,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_textract_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_textract_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_textract_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_textract_' . uniqid() . '.pdf';
         $pdfJobId = 'textract-test-job';
         $this->createImageOnlyPdf($inputPath, $this->bodyLines('TX', 20));
 
@@ -443,8 +443,8 @@ class PdfLineNumberServiceTest extends TestCase
             'textract.enabled' => true,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_hidden_text_scan_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_hidden_text_scan_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_hidden_text_scan_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_hidden_text_scan_' . uniqid() . '.pdf';
         $pdfJobId = 'textract-hidden-text-job';
         $lines = $this->bodyLines('SCAN', 20);
         $this->createScannedLookingPdfWithHiddenTextLayer($inputPath, $lines);
@@ -520,8 +520,8 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.low_confidence_page_strategy' => 'number',
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_service_input_ocr_service_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/legalline_test_service_output_ocr_service_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_ocr_service_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_ocr_service_' . uniqid() . '.pdf';
         $this->createImageOnlyPdf($inputPath, $this->serviceBlockLines());
 
         $service = app(PdfLineNumberService::class);
@@ -634,7 +634,7 @@ class PdfLineNumberServiceTest extends TestCase
      */
     private function createImageOnlyPdf(string $path, array $lines): void
     {
-        $imagePath = sys_get_temp_dir() . '/legalline_test_service_image_' . uniqid() . '.png';
+        $imagePath = sys_get_temp_dir() . '/tenthline_test_service_image_' . uniqid() . '.png';
         $image = imagecreatetruecolor(1275, 1650);
         $white = imagecolorallocate($image, 255, 255, 255);
         $black = imagecolorallocate($image, 0, 0, 0);
@@ -663,7 +663,7 @@ class PdfLineNumberServiceTest extends TestCase
      */
     private function createScannedLookingPdfWithHiddenTextLayer(string $path, array $lines): void
     {
-        $imagePath = sys_get_temp_dir() . '/legalline_test_service_hidden_text_image_' . uniqid() . '.png';
+        $imagePath = sys_get_temp_dir() . '/tenthline_test_service_hidden_text_image_' . uniqid() . '.png';
         $image = imagecreatetruecolor(1275, 1650);
         $white = imagecolorallocate($image, 255, 255, 255);
         $black = imagecolorallocate($image, 0, 0, 0);

@@ -44,26 +44,26 @@ class ProcessPdfJob implements ShouldQueue
 
     public function handle(PdfLineNumberService $pdfService): void
     {
-        Log::info('[LegalLine] ProcessPdfJob handle() entered', ['job_id' => $this->pdfJobId]);
+        Log::info('[TenthLine] ProcessPdfJob handle() entered', ['job_id' => $this->pdfJobId]);
 
         $inputPath = Storage::disk('local')->path("pdf-jobs/{$this->pdfJobId}/input.pdf");
         $outputPath = Storage::disk('local')->path("pdf-jobs/{$this->pdfJobId}/output.pdf");
 
-        Log::info('[LegalLine] ProcessPdfJob: Job started', [
+        Log::info('[TenthLine] ProcessPdfJob: Job started', [
             'job_id' => $this->pdfJobId,
             'input_path' => $inputPath,
             'output_path' => $outputPath,
         ]);
 
         if (! file_exists($inputPath)) {
-            Log::error('[LegalLine] ProcessPdfJob: Input file not found', ['input_path' => $inputPath]);
+            Log::error('[TenthLine] ProcessPdfJob: Input file not found', ['input_path' => $inputPath]);
             $this->failJob('Input file not found.');
             return;
         }
 
         $job = PdfJob::find($this->pdfJobId);
         if (! $job) {
-            Log::warning('[LegalLine] ProcessPdfJob: PdfJob record not found', ['job_id' => $this->pdfJobId]);
+            Log::warning('[TenthLine] ProcessPdfJob: PdfJob record not found', ['job_id' => $this->pdfJobId]);
             return;
         }
 
@@ -85,7 +85,7 @@ class ProcessPdfJob implements ShouldQueue
             ]
         );
 
-        Log::info('[LegalLine] ProcessPdfJob: Processing with options', [
+        Log::info('[TenthLine] ProcessPdfJob: Processing with options', [
             'job_id' => $this->pdfJobId,
             'line_interval' => $job->line_interval ?? 10,
             'margin' => $job->margin ?? 'left',
@@ -153,7 +153,7 @@ class ProcessPdfJob implements ShouldQueue
 
                     DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($update);
 
-                    Log::info('[LegalLine] ProcessPdfJob: Progress updated', [
+                    Log::info('[TenthLine] ProcessPdfJob: Progress updated', [
                         'job_id' => $this->pdfJobId,
                         'processed_pages' => $pageNo,
                         'total_pages' => $total,
@@ -190,7 +190,7 @@ class ProcessPdfJob implements ShouldQueue
             DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($completionUpdate);
 
             $duration = round(microtime(true) - $startTime, 2);
-            Log::info('[LegalLine] ProcessPdfJob: Job completed successfully', [
+            Log::info('[TenthLine] ProcessPdfJob: Job completed successfully', [
                 'job_id' => $this->pdfJobId,
                 'total_pages' => $totalPages,
                 'duration_seconds' => $duration,
@@ -201,7 +201,7 @@ class ProcessPdfJob implements ShouldQueue
             $this->notifyUserJobCompleted($job->fresh() ?? $job);
             $this->broadcastJobSnapshot();
         } catch (\Throwable $e) {
-            Log::error('[LegalLine] ProcessPdfJob: Job failed with exception', [
+            Log::error('[TenthLine] ProcessPdfJob: Job failed with exception', [
                 'job_id' => $this->pdfJobId,
                 'exception' => get_class($e),
                 'message' => $e->getMessage(),
@@ -214,7 +214,7 @@ class ProcessPdfJob implements ShouldQueue
 
     protected function failJob(string $message): void
     {
-        Log::warning('[LegalLine] ProcessPdfJob: Marking job as failed', ['job_id' => $this->pdfJobId, 'error_message' => $message]);
+        Log::warning('[TenthLine] ProcessPdfJob: Marking job as failed', ['job_id' => $this->pdfJobId, 'error_message' => $message]);
         $update = [
             'status' => 'failed',
             'error_message' => $message,
@@ -232,7 +232,7 @@ class ProcessPdfJob implements ShouldQueue
 
     public function failed(\Throwable $exception): void
     {
-        Log::error('[LegalLine] ProcessPdfJob: Job failed (queue failed callback)', [
+        Log::error('[TenthLine] ProcessPdfJob: Job failed (queue failed callback)', [
             'job_id' => $this->pdfJobId,
             'exception' => get_class($exception),
             'message' => $exception->getMessage(),
@@ -282,7 +282,7 @@ class ProcessPdfJob implements ShouldQueue
 
             $job->user->notify(new PdfJobCompletedNotification($job, $downloadUrl));
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] ProcessPdfJob: completion_email_failed', [
+            Log::warning('[TenthLine] ProcessPdfJob: completion_email_failed', [
                 'job_id' => $job->id,
                 'user_id' => $job->user_id,
                 'message' => $e->getMessage(),
@@ -361,7 +361,7 @@ class ProcessPdfJob implements ShouldQueue
         try {
             return Carbon::parse($value)->utc()->format('Y-m-d H:i:s');
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] ProcessPdfJob: unable to normalize OCR timestamp', [
+            Log::warning('[TenthLine] ProcessPdfJob: unable to normalize OCR timestamp', [
                 'job_id' => $this->pdfJobId,
                 'value' => $value,
                 'message' => $e->getMessage(),
@@ -391,7 +391,7 @@ class ProcessPdfJob implements ShouldQueue
                 'ocr_diagnostics',
             ]);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] ProcessPdfJob: unable to inspect OCR tracking columns', [
+            Log::warning('[TenthLine] ProcessPdfJob: unable to inspect OCR tracking columns', [
                 'job_id' => $this->pdfJobId,
                 'message' => $e->getMessage(),
             ]);
@@ -467,7 +467,7 @@ class ProcessPdfJob implements ShouldQueue
 
         DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($update);
 
-        Log::info('[LegalLine] ProcessPdfJob: live processing state updated', [
+        Log::info('[TenthLine] ProcessPdfJob: live processing state updated', [
             'job_id' => $this->pdfJobId,
             'phase' => $phase,
             'label' => $label,

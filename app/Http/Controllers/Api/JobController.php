@@ -17,7 +17,7 @@ class JobController extends Controller
     {
         $job = PdfJob::findOrFail($id);
         if ($request->user() && $job->user_id && (int) $request->user()->id !== (int) $job->user_id) {
-            Log::warning('[LegalLine] job.show.forbidden_user_mismatch', [
+            Log::warning('[TenthLine] job.show.forbidden_user_mismatch', [
                 'job_id' => $job->id,
                 'job_user_id' => $job->user_id,
                 'request_user_id' => $request->user()->id,
@@ -26,7 +26,7 @@ class JobController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        Log::info('[LegalLine] job.show', [
+        Log::info('[TenthLine] job.show', [
             'job_id' => $job->id,
             'status' => $job->status,
             'progress' => $job->progress,
@@ -41,7 +41,7 @@ class JobController extends Controller
     {
         $job = PdfJob::findOrFail($id);
         if ($request->user() && $job->user_id && (int) $request->user()->id !== (int) $job->user_id) {
-            Log::warning('[LegalLine] job.download.forbidden_user_mismatch', [
+            Log::warning('[TenthLine] job.download.forbidden_user_mismatch', [
                 'job_id' => $job->id,
                 'job_user_id' => $job->user_id,
                 'request_user_id' => $request->user()->id,
@@ -50,7 +50,7 @@ class JobController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        Log::info('[LegalLine] job.download.requested', [
+        Log::info('[TenthLine] job.download.requested', [
             'job_id' => $job->id,
             'status' => $job->status,
             'output_path' => $job->output_path,
@@ -61,12 +61,12 @@ class JobController extends Controller
         }
 
         if ($job->status !== 'completed' || ! $job->output_path) {
-            Log::warning('[LegalLine] job.download.not_ready', ['job_id' => $job->id]);
+            Log::warning('[TenthLine] job.download.not_ready', ['job_id' => $job->id]);
             return response()->json(['message' => 'File not ready for download.'], 404);
         }
 
         if (! Storage::disk('local')->exists($job->output_path)) {
-            Log::warning('[LegalLine] job.download.missing_output', [
+            Log::warning('[TenthLine] job.download.missing_output', [
                 'job_id' => $job->id,
                 'output_path' => $job->output_path,
             ]);
@@ -74,7 +74,7 @@ class JobController extends Controller
         }
 
         $filename = 'numbered-' . $job->filename;
-        Log::info('[LegalLine] job.download.success', [
+        Log::info('[TenthLine] job.download.success', [
             'job_id' => $job->id,
             'filename' => $filename,
         ]);

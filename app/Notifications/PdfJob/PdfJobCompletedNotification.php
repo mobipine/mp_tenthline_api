@@ -24,7 +24,7 @@ class PdfJobCompletedNotification extends Notification
     public function toMail(object $notifiable): MailMessage
     {
         return (new MailMessage)
-            ->subject('Your LegalLine document is ready')
+            ->subject('Your TenthLine document is ready')
             ->view('emails.pdf-jobs.completed', [
                 'name' => $notifiable->name,
                 'filename' => $this->job->filename,

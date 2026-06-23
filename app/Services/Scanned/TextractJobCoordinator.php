@@ -89,7 +89,7 @@ class TextractJobCoordinator
                 $this->deleteSourceDocument($started['source_key'], $options);
                 $deletedSource = true;
             } catch (\Throwable $e) {
-                Log::warning('[LegalLine] TextractJobCoordinator: source cleanup failed', [
+                Log::warning('[TenthLine] TextractJobCoordinator: source cleanup failed', [
                     'pdf_job_id' => $pdfJobId,
                     'job_id' => $started['job_id'],
                     'source_disk' => $started['source_disk'],
@@ -113,7 +113,7 @@ class TextractJobCoordinator
             'ocr_started_at' => $startedAt->toISOString(),
         ]);
 
-        Log::info('[LegalLine] TextractJobCoordinator: synchronous run completed', [
+        Log::info('[TenthLine] TextractJobCoordinator: synchronous run completed', [
             'pdf_job_id' => $pdfJobId,
             'job_id' => $started['job_id'],
             'status' => $completion['status'],
@@ -164,7 +164,7 @@ class TextractJobCoordinator
             throw new RuntimeException('Unable to open PDF for Textract upload.');
         }
 
-        Log::info('[LegalLine] TextractJobCoordinator: uploading source document', [
+        Log::info('[TenthLine] TextractJobCoordinator: uploading source document', [
             'pdf_job_id' => $pdfJobId,
             'input_path' => $inputPath,
             'source_disk' => $sourceDisk,
@@ -210,7 +210,7 @@ class TextractJobCoordinator
             ];
         }
 
-        Log::info('[LegalLine] TextractJobCoordinator: starting Textract job', [
+        Log::info('[TenthLine] TextractJobCoordinator: starting Textract job', [
             'pdf_job_id' => $pdfJobId,
             'bucket' => $bucket,
             'source_key' => $sourceKey,
@@ -236,7 +236,7 @@ class TextractJobCoordinator
             throw new RuntimeException('Textract did not return a JobId.');
         }
 
-        Log::info('[LegalLine] TextractJobCoordinator: Textract job started', [
+        Log::info('[TenthLine] TextractJobCoordinator: Textract job started', [
             'pdf_job_id' => $pdfJobId,
             'job_id' => $jobId,
             'bucket' => $bucket,
@@ -299,7 +299,7 @@ class TextractJobCoordinator
             $status = $this->checkStatus($jobId, $client);
             $lastStatus = $status;
 
-            Log::info('[LegalLine] TextractJobCoordinator: poll status', [
+            Log::info('[TenthLine] TextractJobCoordinator: poll status', [
                 'pdf_job_id' => $pdfJobId,
                 'job_id' => $jobId,
                 'attempt' => $attempt,
@@ -373,7 +373,7 @@ class TextractJobCoordinator
                 : null;
         } while ($nextToken !== null);
 
-        Log::info('[LegalLine] TextractJobCoordinator: fetched Textract blocks', [
+        Log::info('[TenthLine] TextractJobCoordinator: fetched Textract blocks', [
             'job_id' => $jobId,
             'status' => $status,
             'block_count' => count($blocks),
@@ -470,7 +470,7 @@ class TextractJobCoordinator
 
         ksort($pages);
 
-        Log::info('[LegalLine] TextractJobCoordinator: normalized Textract pages', [
+        Log::info('[TenthLine] TextractJobCoordinator: normalized Textract pages', [
             'job_id' => $jobId,
             'page_count' => count($pages),
             'page_numbers' => array_keys($pages),
@@ -515,7 +515,7 @@ class TextractJobCoordinator
             fclose($stream);
         }
 
-        Log::info('[LegalLine] TextractJobCoordinator: stored normalized pages', [
+        Log::info('[TenthLine] TextractJobCoordinator: stored normalized pages', [
             'pdf_job_id' => $pdfJobId,
             'result_disk' => $disk,
             'result_path' => $path,
@@ -543,7 +543,7 @@ class TextractJobCoordinator
             throw new RuntimeException('Normalized Textract result file is not valid JSON.');
         }
 
-        Log::debug('[LegalLine] TextractJobCoordinator: loaded normalized pages', [
+        Log::debug('[TenthLine] TextractJobCoordinator: loaded normalized pages', [
             'result_disk' => $disk,
             'result_path' => $path,
             'page_count' => count($decoded),
@@ -557,7 +557,7 @@ class TextractJobCoordinator
         $disk = (string) ($options['source_disk'] ?? config('textract.source_disk', 'textract'));
         Storage::disk($disk)->delete($path);
 
-        Log::info('[LegalLine] TextractJobCoordinator: deleted source document', [
+        Log::info('[TenthLine] TextractJobCoordinator: deleted source document', [
             'source_disk' => $disk,
             'source_key' => $path,
         ]);
@@ -586,14 +586,14 @@ class TextractJobCoordinator
                 ];
             }
 
-            Log::debug('[LegalLine] TextractJobCoordinator: resolved page dimensions', [
+            Log::debug('[TenthLine] TextractJobCoordinator: resolved page dimensions', [
                 'input_path' => $inputPath,
                 'page_count' => count($dimensions),
             ]);
 
             return $dimensions;
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] TextractJobCoordinator: failed to resolve page dimensions', [
+            Log::warning('[TenthLine] TextractJobCoordinator: failed to resolve page dimensions', [
                 'input_path' => $inputPath,
                 'message' => $e->getMessage(),
             ]);
@@ -634,7 +634,7 @@ class TextractJobCoordinator
         try {
             $callback($state);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] TextractJobCoordinator: progress callback failed', [
+            Log::warning('[TenthLine] TextractJobCoordinator: progress callback failed', [
                 'phase' => $state['phase'] ?? null,
                 'message' => $e->getMessage(),
             ]);
@@ -675,7 +675,7 @@ class TextractJobCoordinator
         if ($applied) {
             @ini_set('memory_limit', $configuredLimit);
 
-            Log::info('[LegalLine] TextractJobCoordinator: raised memory limit for result fetch', [
+            Log::info('[TenthLine] TextractJobCoordinator: raised memory limit for result fetch', [
                 'pdf_job_id' => $pdfJobId,
                 'job_id' => $jobId,
                 'original_memory_limit' => $originalLimit,
@@ -767,7 +767,7 @@ class TextractJobCoordinator
 
         ksort($stagedPagePaths);
 
-        Log::info('[LegalLine] TextractJobCoordinator: fetched Textract blocks', [
+        Log::info('[TenthLine] TextractJobCoordinator: fetched Textract blocks', [
             'job_id' => $jobId,
             'status' => $status,
             'block_count' => $blockCount,

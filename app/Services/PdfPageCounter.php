@@ -12,7 +12,7 @@ class PdfPageCounter
     {
         $pageCount = $this->countWithFpdi($filePath);
         if ($pageCount > 0) {
-            Log::info('[LegalLine] PDF page count resolved with FPDI', [
+            Log::info('[TenthLine] PDF page count resolved with FPDI', [
                 'file' => $filePath,
                 'page_count' => $pageCount,
             ]);
@@ -22,7 +22,7 @@ class PdfPageCounter
 
         $pageCount = $this->countWithPdfInfo($filePath);
         if ($pageCount > 0) {
-            Log::info('[LegalLine] PDF page count resolved with pdfinfo fallback', [
+            Log::info('[TenthLine] PDF page count resolved with pdfinfo fallback', [
                 'file' => $filePath,
                 'page_count' => $pageCount,
             ]);
@@ -32,7 +32,7 @@ class PdfPageCounter
 
         $pageCount = $this->countWithSmalotParser($filePath);
         if ($pageCount > 0) {
-            Log::info('[LegalLine] PDF page count resolved with Smalot parser fallback', [
+            Log::info('[TenthLine] PDF page count resolved with Smalot parser fallback', [
                 'file' => $filePath,
                 'page_count' => $pageCount,
             ]);
@@ -40,7 +40,7 @@ class PdfPageCounter
             return $pageCount;
         }
 
-        Log::warning('[LegalLine] PDF page count could not be determined', [
+        Log::warning('[TenthLine] PDF page count could not be determined', [
             'file' => $filePath,
         ]);
 
@@ -55,7 +55,7 @@ class PdfPageCounter
 
             return (int) $pageCount;
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] FPDI failed to count PDF pages', [
+            Log::warning('[TenthLine] FPDI failed to count PDF pages', [
                 'file' => $filePath,
                 'message' => $e->getMessage(),
             ]);
@@ -73,7 +73,7 @@ class PdfPageCounter
 
             return is_array($pages) ? count($pages) : 0;
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] Smalot parser failed to count PDF pages', [
+            Log::warning('[TenthLine] Smalot parser failed to count PDF pages', [
                 'file' => $filePath,
                 'message' => $e->getMessage(),
             ]);

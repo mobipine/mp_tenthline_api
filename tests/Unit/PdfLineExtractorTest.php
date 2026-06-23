@@ -21,7 +21,7 @@ class PdfLineExtractorTest extends TestCase
             'line_numbering.enable_ocr_fallback' => false,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/legalline_test_extractor_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_extractor_' . uniqid() . '.pdf';
         $this->createPdf($inputPath, [
             $this->legalPage($this->bodyLines('P1', 20), 'Case No. 100 of 2026', 'Advocates for the Plaintiff', 1),
             $this->legalPage($this->bodyLines('P2', 20), 'Case No. 101 of 2026', 'Advocates for the Plaintiff', 2),

@@ -32,7 +32,7 @@ class PdfFpdiCompatibilityService
 
         $normalizedPath = $this->normalizeWithQpdf($inputPath);
         if ($normalizedPath !== null && $this->canOpenWithFpdi($normalizedPath, 'normalized')) {
-            Log::info('[LegalLine] PDF normalized for FPDI compatibility', [
+            Log::info('[TenthLine] PDF normalized for FPDI compatibility', [
                 'input_path' => $inputPath,
                 'normalized_path' => $normalizedPath,
             ]);
@@ -79,7 +79,7 @@ class PdfFpdiCompatibilityService
             $pdf = new Fpdi('P', 'pt');
             $pageCount = $pdf->setSourceFile($filePath);
 
-            Log::debug('[LegalLine] FPDI compatibility check passed', [
+            Log::debug('[TenthLine] FPDI compatibility check passed', [
                 'file' => $filePath,
                 'context' => $context,
                 'page_count' => $pageCount,
@@ -87,7 +87,7 @@ class PdfFpdiCompatibilityService
 
             return true;
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] FPDI compatibility check failed', [
+            Log::warning('[TenthLine] FPDI compatibility check failed', [
                 'file' => $filePath,
                 'context' => $context,
                 'message' => $e->getMessage(),
@@ -101,16 +101,16 @@ class PdfFpdiCompatibilityService
     {
         $binary = $this->resolveQpdfBinary();
         if ($binary === '') {
-            Log::warning('[LegalLine] qpdf not available for PDF normalization', [
+            Log::warning('[TenthLine] qpdf not available for PDF normalization', [
                 'input_path' => $inputPath,
             ]);
 
             return null;
         }
 
-        $temporaryBase = tempnam(sys_get_temp_dir(), 'legalline-qpdf-');
+        $temporaryBase = tempnam(sys_get_temp_dir(), 'tenthline-qpdf-');
         if ($temporaryBase === false) {
-            Log::warning('[LegalLine] Failed to create temp file for qpdf normalization', [
+            Log::warning('[TenthLine] Failed to create temp file for qpdf normalization', [
                 'input_path' => $inputPath,
             ]);
 
@@ -133,7 +133,7 @@ class PdfFpdiCompatibilityService
 
         if (in_array($exitCode, [0, 3], true) && is_file($outputPath) && (filesize($outputPath) ?: 0) > 0) {
             if ($commandOutput !== []) {
-                Log::info('[LegalLine] qpdf normalized PDF with warnings', [
+                Log::info('[TenthLine] qpdf normalized PDF with warnings', [
                     'input_path' => $inputPath,
                     'normalized_path' => $outputPath,
                     'output' => implode("\n", $commandOutput),
@@ -143,7 +143,7 @@ class PdfFpdiCompatibilityService
             return $outputPath;
         }
 
-        Log::warning('[LegalLine] qpdf failed to normalize PDF', [
+        Log::warning('[TenthLine] qpdf failed to normalize PDF', [
             'input_path' => $inputPath,
             'normalized_path' => $outputPath,
             'exit_code' => $exitCode,

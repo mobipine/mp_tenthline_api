@@ -25,7 +25,7 @@ class CustomResetPasswordNotification extends Notification
         $resetUrl = $frontendUrl . '/?auth=reset-password&token=' . $this->token . '&email=' . urlencode($notifiable->getEmailForPasswordReset());
 
         return (new MailMessage)
-            ->subject('Set or Reset your LegalLine password')
+            ->subject('Set or Reset your TenthLine password')
             ->view('emails.auth.password-reset', [
                 'name' => $notifiable->name,
                 'resetUrl' => $resetUrl,

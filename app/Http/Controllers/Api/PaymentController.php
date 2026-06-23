@@ -96,7 +96,7 @@ class PaymentController extends Controller
         $paymentsEnabled = (bool) $this->settings->enable_payment;
         $zeroAmountCharge = $amount <= 0.0;
 
-        Log::info('[LegalLine] payment.initiate.received', [
+        Log::info('[TenthLine] payment.initiate.received', [
             'phone' => $phone,
             'email' => $email,
             'user_id' => $user->id,
@@ -120,7 +120,7 @@ class PaymentController extends Controller
             'status' => 'pending',
         ]);
 
-        Log::info('[LegalLine] payment.initiate.created', [
+        Log::info('[TenthLine] payment.initiate.created', [
             'payment_id' => $payment->id,
             'reference' => $reference,
             'user_id' => $user->id,
@@ -138,14 +138,14 @@ class PaymentController extends Controller
             ]);
             $payment->refresh();
 
-            Log::info('[LegalLine] payment.initiate.zero_amount_auto_completed', [
+            Log::info('[TenthLine] payment.initiate.zero_amount_auto_completed', [
                 'payment_id' => $payment->id,
                 'reference' => $reference,
                 'user_id' => $user->id,
             ]);
         } elseif ($paymentsEnabled) {
             $result = $this->mpesa->stkPush($phone, $amount, $reference, $payment->id);
-            Log::info('[LegalLine] payment.initiate.stk_response', [
+            Log::info('[TenthLine] payment.initiate.stk_response', [
                 'payment_id' => $payment->id,
                 'reference' => $reference,
                 'has_checkout_request_id' => isset($result['CheckoutRequestID']),
@@ -158,7 +158,7 @@ class PaymentController extends Controller
                 ]);
             }
         } else {
-            Log::info('[LegalLine] payment.initiate.simulation_skip_stk_enable_payment_disabled', [
+            Log::info('[TenthLine] payment.initiate.simulation_skip_stk_enable_payment_disabled', [
                 'payment_id' => $payment->id,
                 'reference' => $reference,
             ]);
@@ -188,7 +188,7 @@ class PaymentController extends Controller
         $requestUser = auth('sanctum')->user();
 
         if ($requestUser && $payment->user_id && (int) $requestUser->id !== (int) $payment->user_id) {
-            Log::warning('[LegalLine] payment.status.forbidden', [
+            Log::warning('[TenthLine] payment.status.forbidden', [
                 'reference' => $reference,
                 'payment_user_id' => $payment->user_id,
                 'request_user_id' => $requestUser->id,
@@ -209,7 +209,7 @@ class PaymentController extends Controller
             ]);
             $payment->refresh();
 
-            Log::info('[LegalLine] payment.status.zero_amount_auto_completed', [
+            Log::info('[TenthLine] payment.status.zero_amount_auto_completed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,
                 'user_id' => $payment->user_id,
@@ -231,14 +231,14 @@ class PaymentController extends Controller
             ]);
             $payment->refresh();
 
-            Log::info('[LegalLine] payment.status.simulated_completed', [
+            Log::info('[TenthLine] payment.status.simulated_completed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,
                 'user_id' => $payment->user_id,
             ]);
         }
 
-        // Log::info('[LegalLine] payment.status.response', [
+        // Log::info('[TenthLine] payment.status.response', [
         //     'payment_id' => $payment->id,
         //     'reference' => $payment->reference,
         //     'status' => $payment->status,
@@ -266,7 +266,7 @@ class PaymentController extends Controller
             if ($requestUser->phone !== $phone) {
                 $requestUser->forceFill(['phone' => $phone])->save();
 
-                Log::info('[LegalLine] payment.initiate.auth_user_phone_updated', [
+                Log::info('[TenthLine] payment.initiate.auth_user_phone_updated', [
                     'user_id' => $requestUser->id,
                     'email' => $requestUser->email,
                     'phone' => $phone,
@@ -279,7 +279,7 @@ class PaymentController extends Controller
 
         $existingUser = User::where('email', $email)->first();
         if ($existingUser) {
-            Log::info('[LegalLine] payment.initiate.existing_user_requires_sign_in', [
+            Log::info('[TenthLine] payment.initiate.existing_user_requires_sign_in', [
                 'email' => $email,
                 'user_id' => $existingUser->id,
             ]);
@@ -301,7 +301,7 @@ class PaymentController extends Controller
         try {
             $user->notify(new WelcomeCustomerNotification);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] payment.user_creation.welcome_email_failed', [
+            Log::warning('[TenthLine] payment.user_creation.welcome_email_failed', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'message' => $e->getMessage(),
@@ -320,7 +320,7 @@ class PaymentController extends Controller
         $localPart = Str::before($email, '@');
         $label = trim(str_replace(['.', '_', '-'], ' ', $localPart));
 
-        return Str::title($label ?: 'LegalLine Customer');
+        return Str::title($label ?: 'TenthLine Customer');
     }
 
     protected function serializeUser(User $user): array
@@ -343,7 +343,7 @@ class PaymentController extends Controller
             $customerRole = Role::findOrCreate('customer');
             $user->assignRole($customerRole);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] payment.user_creation.customer_role_assignment_failed', [
+            Log::warning('[TenthLine] payment.user_creation.customer_role_assignment_failed', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'message' => $e->getMessage(),

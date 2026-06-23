@@ -40,7 +40,7 @@ class PurgeExpiredPdfJobsCommand extends Command
             $deletedCount++;
         }
 
-        Log::info('[LegalLine] pdf-jobs.purge-expired.completed', [
+        Log::info('[TenthLine] pdf-jobs.purge-expired.completed', [
             'hours' => $hours,
             'cutoff' => $cutoff->toIso8601String(),
             'deleted_jobs' => $deletedCount,

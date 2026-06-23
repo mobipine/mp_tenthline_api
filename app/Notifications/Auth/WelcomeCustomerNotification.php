@@ -20,7 +20,7 @@ class WelcomeCustomerNotification extends Notification
         $frontendUrl = rtrim((string) config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000')), '/');
 
         return (new MailMessage)
-            ->subject('Welcome to LegalLine')
+            ->subject('Welcome to TenthLine')
             ->view('emails.auth.welcome', [
                 'name' => $notifiable->name,
                 'frontendUrl' => $frontendUrl,

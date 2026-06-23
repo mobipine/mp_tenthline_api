@@ -29,7 +29,7 @@ class LoginOtpNotification extends Notification
         }
 
         return (new MailMessage)
-            ->subject('Your LegalLine login code')
+            ->subject('Your TenthLine login code')
             ->view('emails.auth.login-otp', [
                 'name' => $name,
                 'code' => $this->code,

@@ -66,7 +66,7 @@ class PdfLineExtractor
                 $this->lastDiagnostics['pages'] = $poppler['page_diagnostics'];
                 $this->lastDiagnostics['total_lines_detected'] = $poppler['total_lines_detected'];
             } elseif ($enginePreference === 'poppler') {
-                Log::warning('[LegalLine] PdfLineExtractor: poppler extraction failed, falling back to smalot', [
+                Log::warning('[TenthLine] PdfLineExtractor: poppler extraction failed, falling back to smalot', [
                     'path' => $inputPath,
                     'reason' => $poppler['reason'] ?? 'unknown',
                 ]);
@@ -83,7 +83,7 @@ class PdfLineExtractor
             $this->lastDiagnostics['fallback_to_smalot'] = $this->lastDiagnostics['fallback_to_smalot'] || $enginePreference === 'auto';
         }
 
-        Log::info('[LegalLine] PdfLineExtractor: extraction complete', [
+        Log::info('[TenthLine] PdfLineExtractor: extraction complete', [
             'path' => $inputPath,
             'engine_preference' => $this->lastDiagnostics['engine_preference'],
             'engine_used' => $this->lastDiagnostics['engine_used'],
@@ -175,7 +175,7 @@ class PdfLineExtractor
             $parser = new Parser([], $config);
             $pdf = $parser->parseFile($inputPath);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] PdfLineExtractor: smalot parse failed, returning no lines', [
+            Log::warning('[TenthLine] PdfLineExtractor: smalot parse failed, returning no lines', [
                 'path' => $inputPath,
                 'error' => $e->getMessage(),
             ]);
@@ -195,7 +195,7 @@ class PdfLineExtractor
             try {
                 $pages[$pageNo] = $this->extractRawPageUsingSmalot($page, $pageNo);
             } catch (\Throwable $e) {
-                Log::warning('[LegalLine] PdfLineExtractor: smalot page extraction failed', [
+                Log::warning('[TenthLine] PdfLineExtractor: smalot page extraction failed', [
                     'path' => $inputPath,
                     'page' => $pageNo,
                     'error' => $e->getMessage(),
@@ -621,7 +621,7 @@ class PdfLineExtractor
         $replacements = [];
         $remainingPages = $candidatePages;
 
-        Log::info('[LegalLine] PdfLineExtractor: OCR fallback candidates identified', [
+        Log::info('[TenthLine] PdfLineExtractor: OCR fallback candidates identified', [
             'input_path' => $inputPath,
             'engine' => $engine,
             'candidate_pages' => array_keys($candidatePages),
@@ -657,7 +657,7 @@ class PdfLineExtractor
                     'pages_replaced' => [],
                 ];
 
-                Log::warning('[LegalLine] PdfLineExtractor: Textract fallback failed, will try local OCR if available', [
+                Log::warning('[TenthLine] PdfLineExtractor: Textract fallback failed, will try local OCR if available', [
                     'input_path' => $inputPath,
                     'engine' => $engine,
                     'candidate_pages' => array_keys($candidatePages),
@@ -671,7 +671,7 @@ class PdfLineExtractor
                 'pages_replaced' => [],
             ];
 
-            Log::info('[LegalLine] PdfLineExtractor: skipping Textract fallback for this document', [
+            Log::info('[TenthLine] PdfLineExtractor: skipping Textract fallback for this document', [
                 'input_path' => $inputPath,
                 'engine' => $engine,
                 'candidate_pages' => array_keys($candidatePages),
@@ -708,7 +708,7 @@ class PdfLineExtractor
                 $this->lastDiagnostics['ocr']['providers_used'][] = 'tesseract';
             }
         } elseif ($remainingPages !== []) {
-            Log::info('[LegalLine] PdfLineExtractor: local OCR fallback unavailable for remaining pages', [
+            Log::info('[TenthLine] PdfLineExtractor: local OCR fallback unavailable for remaining pages', [
                 'input_path' => $inputPath,
                 'engine' => $engine,
                 'remaining_pages' => array_keys($remainingPages),
@@ -727,7 +727,7 @@ class PdfLineExtractor
             $pages[$pageNo] = $page;
         }
 
-        Log::info('[LegalLine] PdfLineExtractor: OCR fallback replaced low-confidence pages', [
+        Log::info('[TenthLine] PdfLineExtractor: OCR fallback replaced low-confidence pages', [
             'input_path' => $inputPath,
             'engine' => $engine,
             'pages' => array_keys($replacements),
@@ -911,7 +911,7 @@ class PdfLineExtractor
         $pdfJobId = $this->resolveProcessingJobId($inputPath, $context);
         $pageDimensions = $this->textractJobCoordinator->resolvePageDimensions($inputPath);
 
-        Log::info('[LegalLine] PdfLineExtractor: starting Textract OCR fallback', [
+        Log::info('[TenthLine] PdfLineExtractor: starting Textract OCR fallback', [
             'input_path' => $inputPath,
             'pdf_job_id' => $pdfJobId,
             'candidate_pages' => array_keys($candidatePages),
@@ -956,7 +956,7 @@ class PdfLineExtractor
             'source_deleted' => $run['source_deleted'] ?? false,
         ];
 
-        Log::info('[LegalLine] PdfLineExtractor: Textract OCR fallback completed', [
+        Log::info('[TenthLine] PdfLineExtractor: Textract OCR fallback completed', [
             'input_path' => $inputPath,
             'pdf_job_id' => $pdfJobId,
             'job_id' => $summary['job_id'],
@@ -992,7 +992,7 @@ class PdfLineExtractor
      */
     private function extractRawPageUsingOcr(string $inputPath, int $pageNo, float $pageWidth, float $pageHeight): ?array
     {
-        $temporaryBase = tempnam(sys_get_temp_dir(), 'legalline-ocr-');
+        $temporaryBase = tempnam(sys_get_temp_dir(), 'tenthline-ocr-');
         if ($temporaryBase === false) {
             return null;
         }

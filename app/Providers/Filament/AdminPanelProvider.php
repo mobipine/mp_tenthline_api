@@ -37,7 +37,7 @@ class AdminPanelProvider extends PanelProvider
             )
             // ->favicon(asset('images/echonet-logo.pngg'))
 
-            ->brandName('LegalLine')
+            ->brandName('TenthLine')
             // ->brandLogo(asset('images/echonet-logo.png'))
             // ->brandLogoHeight('3.5rem')
             ->colors([

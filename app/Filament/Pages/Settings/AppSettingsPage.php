@@ -13,7 +13,7 @@ class AppSettingsPage extends Page implements HasForms
 {
     use InteractsWithForms;
     protected static ?string $navigationIcon = 'heroicon-o-cog-6-tooth';
-    protected static ?string $navigationGroup = 'LegalLine';
+    protected static ?string $navigationGroup = 'TenthLine';
     protected static ?string $navigationLabel = 'App Settings';
     protected static ?string $title = 'App Settings';
     protected static string $view = 'filament.pages.settings.app-settings-page';
