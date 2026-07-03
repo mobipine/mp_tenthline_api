@@ -7,6 +7,15 @@ use Tests\TestCase;
 
 class PdfOcrLineGridBuilderTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Grid reconstruction is opt-in (off by default so blank gaps are not
+        // over-numbered); these tests exercise the builder itself, so enable it.
+        config()->set('line_numbering.enable_ocr_grid_reconstruction', true);
+    }
+
     public function test_it_reconstructs_missing_scanned_lines_into_a_regular_grid(): void
     {
         $builder = app(PdfOcrLineGridBuilder::class);
@@ -115,13 +124,13 @@ class PdfOcrLineGridBuilderTest extends TestCase
         $this->assertNull($grid);
     }
 
-    public function test_it_does_not_regularize_dense_textract_pages_without_clear_missing_line_evidence(): void
+    public function test_it_does_not_regularize_dense_paddleocr_pages_without_clear_missing_line_evidence(): void
     {
         $builder = app(PdfOcrLineGridBuilder::class);
 
         $page = [
             'engine' => 'ocr',
-            'ocr_provider' => 'textract',
+            'ocr_provider' => 'paddleocr',
         ];
 
         $layout = [

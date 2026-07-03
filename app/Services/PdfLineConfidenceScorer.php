@@ -16,7 +16,6 @@ class PdfLineConfidenceScorer
             is_array($page['raw_lines'] ?? null) ? $page['raw_lines'] : [],
             static fn (mixed $line): bool => is_array($line)
         ));
-
         usort($lines, static fn (array $a, array $b): int => ((float) ($b['y'] ?? 0.0)) <=> ((float) ($a['y'] ?? 0.0)));
 
         $minimumLineConfidence = max(0.10, min(0.95, (float) config('line_numbering.minimum_line_confidence', 0.48)));
@@ -37,6 +36,12 @@ class PdfLineConfidenceScorer
             'bottom' => 0.0,
         ];
         $medianSpacing = max(0.0, (float) ($layout['median_line_spacing'] ?? 0.0));
+
+        // On OCR pages, dropping a genuine body line for low confidence shifts
+        // every ordinal number below it. Keep low-confidence lines that still
+        // sit inside the body region so the running line count stays honest.
+        $keepLowConfidenceBodyLines = ($page['engine'] ?? null) === 'ocr'
+            && (bool) config('line_numbering.ocr_keep_low_confidence_body_lines', true);
 
         $trustedAnchors = [];
         $trustedLines = [];
@@ -66,6 +71,7 @@ class PdfLineConfidenceScorer
                 isset($tableRowLineIds[$lineId]),
                 isset($inlineClauseMarkerIds[$lineId])
             );
+
             $scoredLines[] = $scored;
 
             if (($scored['suppressed_reason'] ?? null) !== null) {
@@ -77,9 +83,13 @@ class PdfLineConfidenceScorer
             }
 
             if ((float) $scored['confidence'] < $minimumLineConfidence) {
-                $suppressedCounts['low_confidence']++;
-                $scoredLines[array_key_last($scoredLines)]['suppressed_reason'] = 'low_confidence';
-                continue;
+                if (! ($keepLowConfidenceBodyLines && ($scored['inside_body_region'] ?? false))) {
+                    $suppressedCounts['low_confidence']++;
+                    $scoredLines[array_key_last($scoredLines)]['suppressed_reason'] = 'low_confidence';
+                    continue;
+                }
+
+                $scoredLines[array_key_last($scoredLines)]['retained_low_confidence'] = true;
             }
 
             $trustedAnchors[] = [

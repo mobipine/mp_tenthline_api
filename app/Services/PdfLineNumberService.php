@@ -34,7 +34,7 @@ class PdfLineNumberService
         string $inputPath,
         string $outputPath,
         int $lineInterval = 10,
-        string $margin = 'left',
+        string $margin = 'right',
         int $fontSizePt = 8,
         ?callable $onPageProcessed = null,
         array $context = []

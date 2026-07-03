@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Services\PdfLineConfidenceScorer;
+use App\Services\PdfPageLayoutAnalyzer;
 use Tests\TestCase;
 
 class PdfLineConfidenceScorerTest extends TestCase
@@ -160,5 +161,142 @@ class PdfLineConfidenceScorerTest extends TestCase
         $this->assertNotContains('14,', $trustedTexts);
         $this->assertSame(1, $result['suppressed_counts']['structured_content']);
         $this->assertCount(5, $result['trusted_anchors']);
+    }
+
+    public function test_it_counts_ocr_headings_as_printable_lines_and_excludes_footer_page_numbers(): void
+    {
+        $page = $this->ocrBodyPageWithTopTitleAndSectionHeading();
+        $layout = app(PdfPageLayoutAnalyzer::class)->analyze($page, []);
+
+        $result = app(PdfLineConfidenceScorer::class)->scorePage($page, $layout, []);
+        $trustedTexts = array_map(
+            static fn (array $line): string => (string) ($line['text'] ?? ''),
+            $result['trusted_lines'] ?? []
+        );
+        $scoredLines = [];
+
+        foreach ($result['scored_lines'] ?? [] as $line) {
+            if (! is_array($line)) {
+                continue;
+            }
+
+            $scoredLines[(string) ($line['text'] ?? '')] = $line;
+        }
+
+        $this->assertCount(32, $result['trusted_anchors'] ?? []);
+        $this->assertContains('Introduction', $trustedTexts);
+        $this->assertContains('The Importance of Tactics', $trustedTexts);
+        $this->assertSame('BODY 09 text for heading suppression', $trustedTexts[9] ?? null);
+        $this->assertSame('BODY 18 text for heading suppression', $trustedTexts[19] ?? null);
+        $this->assertSame('BODY 28 text for heading suppression', $trustedTexts[29] ?? null);
+        $this->assertNull($scoredLines['The Importance of Tactics']['suppressed_reason'] ?? null);
+        $this->assertSame('outside_body_region', $scoredLines['5']['suppressed_reason'] ?? null);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ocrBodyPageWithTopTitleAndSectionHeading(): array
+    {
+        $lines = [];
+        $bodyY = 700.0;
+
+        $lines[] = $this->ocrLine('Introduction', 230.0, 360.0, 740.0);
+
+        for ($lineNo = 1; $lineNo <= 8; $lineNo++) {
+            $lines[] = $this->ocrLine(
+                sprintf('BODY %02d text for heading suppression', $lineNo),
+                72.0,
+                492.0,
+                $bodyY
+            );
+            $bodyY -= 18.0;
+        }
+
+        for ($lineNo = 9; $lineNo <= 12; $lineNo++) {
+            $lines[] = $this->ocrLine(
+                sprintf('BODY %02d text for heading suppression', $lineNo),
+                72.0,
+                492.0,
+                $bodyY
+            );
+            $bodyY -= 18.0;
+        }
+
+        $lines[] = $this->ocrLine('The Importance of Tactics', 195.0, 417.0, 456.0);
+
+        $bodyY = 420.0;
+        for ($lineNo = 13; $lineNo <= 30; $lineNo++) {
+            $lines[] = $this->ocrLine(
+                sprintf('BODY %02d text for heading suppression', $lineNo),
+                72.0,
+                492.0,
+                $bodyY
+            );
+            $bodyY -= 18.0;
+        }
+
+        $lines[] = $this->ocrLine('5', 290.0, 300.0, 45.0);
+
+        return [
+            'page_no' => 1,
+            'engine' => 'ocr',
+            'ocr_provider' => 'paddleocr',
+            'page_width' => 612.0,
+            'page_height' => 792.0,
+            'page_rotation' => 0,
+            'raw_lines' => $lines,
+            'diagnostic' => [
+                'engine' => 'ocr',
+                'ocr_provider' => 'paddleocr',
+                'raw_lines_detected' => count($lines),
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ocrLine(string $text, float $xStart, float $xEnd, float $y): array
+    {
+        $words = preg_split('/\s+/u', trim($text), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $resolvedWords = [];
+        $cursor = $xStart;
+        $wordGap = 7.0;
+        $availableWidth = max(24.0, $xEnd - $xStart);
+        $totalChars = max(1, strlen(str_replace(' ', '', $text)));
+        $charWidth = $availableWidth / $totalChars;
+
+        foreach ($words as $index => $word) {
+            $wordWidth = max(16.0, strlen($word) * $charWidth);
+            $resolvedWords[] = [
+                'id' => sprintf('word-%s-%d', md5($text), $index + 1),
+                'text' => $word,
+                'x_start' => round($cursor, 3),
+                'x_end' => round(min($xEnd, $cursor + $wordWidth), 3),
+                'y' => round($y, 3),
+                'top' => round($y + 7.5, 3),
+                'bottom' => round($y - 7.5, 3),
+                'height' => 15.0,
+                'confidence' => 0.99,
+                'source' => 'paddleocr',
+            ];
+            $cursor += $wordWidth + $wordGap;
+        }
+
+        return [
+            'id' => 'line-' . md5($text . '|' . $y),
+            'text' => $text,
+            'x_start' => round($xStart, 3),
+            'x_end' => round($xEnd, 3),
+            'y' => round($y, 3),
+            'top' => round($y + 7.5, 3),
+            'bottom' => round($y - 7.5, 3),
+            'height' => 15.0,
+            'char_count' => strlen($text),
+            'words' => $resolvedWords,
+            'source' => 'paddleocr',
+            'confidence' => 0.99,
+        ];
     }
 }

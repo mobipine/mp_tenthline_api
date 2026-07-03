@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Services\PdfLineNumberService;
-use App\Services\Scanned\TextractJobCoordinator;
+use App\Services\Scanned\PaddleOcrJobCoordinator;
 use setasign\Fpdi\Fpdi;
 use Tests\Concerns\CreatesLineNumberingPdfs;
 use Tests\TestCase;
@@ -173,7 +173,7 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_diagnostics' => true,
             'line_numbering.enable_ocr_fallback' => false,
             'line_numbering.skip_table_pages' => true,
-            'textract.enabled' => false,
+            'paddleocr.enabled' => false,
         ]);
 
         $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_table_' . uniqid() . '.pdf';
@@ -213,7 +213,7 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_diagnostics' => true,
             'line_numbering.enable_ocr_fallback' => false,
             'line_numbering.skip_table_pages' => false,
-            'textract.enabled' => false,
+            'paddleocr.enabled' => false,
         ]);
 
         $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_table_rows_' . uniqid() . '.pdf';
@@ -351,7 +351,7 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
-    public function test_it_can_use_textract_fallback_for_image_only_pages(): void
+    public function test_it_can_use_paddleocr_fallback_for_image_only_pages(): void
     {
         if (! $this->commandExists('pdftotext')) {
             $this->markTestSkipped('pdftotext command not available on this machine.');
@@ -367,40 +367,38 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.enable_diagnostics' => true,
             'line_numbering.enable_ocr_fallback' => false,
             'line_numbering.low_confidence_page_strategy' => 'number',
-            'textract.enabled' => true,
+            'paddleocr.enabled' => true,
         ]);
 
-        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_textract_' . uniqid() . '.pdf';
-        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_textract_' . uniqid() . '.pdf';
-        $pdfJobId = 'textract-test-job';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_paddleocr_' . uniqid() . '.pdf';
+        $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_paddleocr_' . uniqid() . '.pdf';
+        $pdfJobId = 'paddleocr-test-job';
         $this->createImageOnlyPdf($inputPath, $this->bodyLines('TX', 20));
 
-        $textract = \Mockery::mock(TextractJobCoordinator::class);
-        $textract->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
-        $textract->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
+        $paddleOcr = \Mockery::mock(PaddleOcrJobCoordinator::class);
+        $paddleOcr->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
+        $paddleOcr->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
             1 => ['width' => 612.0, 'height' => 792.0],
         ]);
-        $textract->shouldReceive('runSynchronous')->once()->with(
+        $paddleOcr->shouldReceive('run')->once()->with(
             $pdfJobId,
             $inputPath,
             \Mockery::type('array'),
+            [1],
             \Mockery::on(static fn (mixed $options): bool => is_array($options))
         )->andReturn([
             'status' => 'SUCCEEDED',
-            'job_id' => 'textract-job-123',
-            'bucket' => 'tenthlines3bucket',
-            'source_key' => 'textract/input/' . $pdfJobId . '/input.pdf',
-            'result_path' => 'pdf-jobs/' . $pdfJobId . '/textract-pages.json',
+            'job_id' => 'paddleocr-job-123',
+            'result_path' => 'pdf-jobs/' . $pdfJobId . '/ocr-results.json',
             'started_at' => now()->subSeconds(2)->toISOString(),
             'completed_at' => now()->toISOString(),
-            'poll_attempts' => 1,
+            'pages_attempted' => [1],
             'warnings' => [],
-            'source_deleted' => true,
             'pages' => [
-                1 => $this->textractNormalizedPage($this->bodyLines('TX', 20)),
+                1 => $this->paddleOcrNormalizedPage($this->bodyLines('TX', 20)),
             ],
         ]);
-        $this->app->instance(TextractJobCoordinator::class, $textract);
+        $this->app->instance(PaddleOcrJobCoordinator::class, $paddleOcr);
 
         $service = app(PdfLineNumberService::class);
         $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8, null, ['pdf_job_id' => $pdfJobId]);
@@ -413,10 +411,10 @@ class PdfLineNumberServiceTest extends TestCase
         $text = is_string($text) ? $text : '';
 
         $this->assertSame('ocr', $pageDiagnostics['engine'] ?? null);
-        $this->assertSame('textract', $pageDiagnostics['ocr_provider'] ?? null);
+        $this->assertSame('paddleocr', $pageDiagnostics['ocr_provider'] ?? null);
         $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
-        $this->assertContains('textract', $ocrSummary['providers_used'] ?? []);
-        $this->assertSame('textract-job-123', $ocrSummary['textract']['job_id'] ?? null);
+        $this->assertContains('paddleocr', $ocrSummary['providers_used'] ?? []);
+        $this->assertSame('paddleocr-job-123', $ocrSummary['paddleocr']['job_id'] ?? null);
         $this->assertContains(1, $ocrSummary['pages_replaced'] ?? []);
         $this->assertGreaterThanOrEqual(2, (int) ($pageRun['labels_drawn'] ?? 0));
         $this->assertStringContainsString('-10', $text);
@@ -425,7 +423,7 @@ class PdfLineNumberServiceTest extends TestCase
         @unlink($outputPath);
     }
 
-    public function test_it_uses_textract_for_image_based_pages_even_when_a_hidden_text_layer_exists(): void
+    public function test_it_uses_paddleocr_for_image_based_pages_even_when_a_hidden_text_layer_exists(): void
     {
         if (! $this->commandExists('pdftotext') || ! $this->commandExists('pdfimages')) {
             $this->markTestSkipped('Poppler text and image inspection commands are not available on this machine.');
@@ -440,41 +438,39 @@ class PdfLineNumberServiceTest extends TestCase
             'line_numbering.debug_overlay' => false,
             'line_numbering.enable_diagnostics' => true,
             'line_numbering.enable_ocr_fallback' => false,
-            'textract.enabled' => true,
+            'paddleocr.enabled' => true,
         ]);
 
         $inputPath = sys_get_temp_dir() . '/tenthline_test_service_input_hidden_text_scan_' . uniqid() . '.pdf';
         $outputPath = sys_get_temp_dir() . '/tenthline_test_service_output_hidden_text_scan_' . uniqid() . '.pdf';
-        $pdfJobId = 'textract-hidden-text-job';
+        $pdfJobId = 'paddleocr-hidden-text-job';
         $lines = $this->bodyLines('SCAN', 20);
         $this->createScannedLookingPdfWithHiddenTextLayer($inputPath, $lines);
 
-        $textract = \Mockery::mock(TextractJobCoordinator::class);
-        $textract->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
-        $textract->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
+        $paddleOcr = \Mockery::mock(PaddleOcrJobCoordinator::class);
+        $paddleOcr->shouldReceive('enabled')->atLeast()->once()->andReturnTrue();
+        $paddleOcr->shouldReceive('resolvePageDimensions')->once()->with($inputPath)->andReturn([
             1 => ['width' => 612.0, 'height' => 792.0],
         ]);
-        $textract->shouldReceive('runSynchronous')->once()->with(
+        $paddleOcr->shouldReceive('run')->once()->with(
             $pdfJobId,
             $inputPath,
             \Mockery::type('array'),
+            [1],
             \Mockery::type('array')
         )->andReturn([
             'status' => 'SUCCEEDED',
-            'job_id' => 'textract-job-hidden-layer',
-            'bucket' => 'tenthlines3bucket',
-            'source_key' => 'textract/input/' . $pdfJobId . '/input.pdf',
-            'result_path' => 'pdf-jobs/' . $pdfJobId . '/textract-pages.json',
+            'job_id' => 'paddleocr-job-hidden-layer',
+            'result_path' => 'pdf-jobs/' . $pdfJobId . '/ocr-results.json',
             'started_at' => now()->subSeconds(2)->toISOString(),
             'completed_at' => now()->toISOString(),
-            'poll_attempts' => 2,
+            'pages_attempted' => [1],
             'warnings' => [],
-            'source_deleted' => true,
             'pages' => [
-                1 => $this->textractNormalizedPage($lines),
+                1 => $this->paddleOcrNormalizedPage($lines),
             ],
         ]);
-        $this->app->instance(TextractJobCoordinator::class, $textract);
+        $this->app->instance(PaddleOcrJobCoordinator::class, $paddleOcr);
 
         $service = app(PdfLineNumberService::class);
         $service->addLineNumbers($inputPath, $outputPath, 10, 'right', 8, null, ['pdf_job_id' => $pdfJobId]);
@@ -487,7 +483,7 @@ class PdfLineNumberServiceTest extends TestCase
         $imageMetrics = $pageDiagnostics['image_based_page_metrics'] ?? [];
 
         $this->assertTrue((bool) ($pageDiagnostics['used_ocr_fallback'] ?? false));
-        $this->assertSame('textract', $pageDiagnostics['ocr_provider'] ?? null);
+        $this->assertSame('paddleocr', $pageDiagnostics['ocr_provider'] ?? null);
         $this->assertSame('page_is_mostly_image_based', $candidateDetails['reason'] ?? null);
         $this->assertTrue((bool) ($candidateDetails['image_based_page'] ?? false));
         $this->assertTrue((bool) ($imageMetrics['is_mostly_image_based'] ?? false));
@@ -700,7 +696,7 @@ class PdfLineNumberServiceTest extends TestCase
      * @param  list<string>  $lines
      * @return array<string, mixed>
      */
-    private function textractNormalizedPage(array $lines): array
+    private function paddleOcrNormalizedPage(array $lines): array
     {
         $rawLines = [];
         $baseline = 660.0;
@@ -714,7 +710,7 @@ class PdfLineNumberServiceTest extends TestCase
             foreach ($words as $wordIndex => $word) {
                 $width = max(20.0, strlen($word) * 5.8);
                 $resolvedWords[] = [
-                    'id' => sprintf('tx-word-%d-%d', $index + 1, $wordIndex + 1),
+                    'id' => sprintf('po-word-%d-%d', $index + 1, $wordIndex + 1),
                     'text' => $word,
                     'x_start' => round($cursor, 3),
                     'x_end' => round($cursor + $width, 3),
@@ -723,13 +719,13 @@ class PdfLineNumberServiceTest extends TestCase
                     'bottom' => round($y - 7.5, 3),
                     'height' => 15.0,
                     'confidence' => 99.1,
-                    'source' => 'textract',
+                    'source' => 'paddleocr',
                 ];
                 $cursor += $width + 9.0;
             }
 
             $rawLines[] = [
-                'id' => sprintf('tx-line-%d', $index + 1),
+                'id' => sprintf('po-line-%d', $index + 1),
                 'text' => $text,
                 'x_start' => 72.0,
                 'x_end' => 472.0,
@@ -739,7 +735,7 @@ class PdfLineNumberServiceTest extends TestCase
                 'height' => 15.0,
                 'char_count' => strlen($text),
                 'words' => $resolvedWords,
-                'source' => 'textract',
+                'source' => 'paddleocr',
                 'confidence' => 99.1,
             ];
         }
@@ -747,16 +743,16 @@ class PdfLineNumberServiceTest extends TestCase
         return [
             'page_no' => 1,
             'engine' => 'ocr',
-            'ocr_provider' => 'textract',
+            'ocr_provider' => 'paddleocr',
             'page_width' => 612.0,
             'page_height' => 792.0,
             'page_rotation' => 0,
             'raw_lines' => $rawLines,
             'diagnostic' => [
                 'engine' => 'ocr',
-                'ocr_provider' => 'textract',
+                'ocr_provider' => 'paddleocr',
                 'raw_lines_detected' => count($rawLines),
-                'textract_lines_retained' => count($rawLines),
+                'paddleocr_lines_retained' => count($rawLines),
             ],
         ];
     }

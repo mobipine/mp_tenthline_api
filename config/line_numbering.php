@@ -56,6 +56,9 @@ return [
     'body_region_bottom_padding_pt' => (float) env('PDF_LINE_BODY_REGION_BOTTOM_PADDING_PT', 12.0),
     'body_region_side_padding_pt' => (float) env('PDF_LINE_BODY_REGION_SIDE_PADDING_PT', 10.0),
     'minimum_line_confidence' => (float) env('PDF_LINE_MINIMUM_CONFIDENCE', 0.48),
+    // Keep low-confidence lines that are still inside the body region on OCR
+    // pages, so suppressing them does not shift the ordinal line numbering.
+    'ocr_keep_low_confidence_body_lines' => (bool) env('PDF_LINE_OCR_KEEP_LOW_CONFIDENCE_BODY_LINES', true),
     'minimum_page_confidence' => (float) env('PDF_LINE_MINIMUM_PAGE_CONFIDENCE', 0.58),
     'skip_low_confidence_pages' => (bool) env('PDF_LINE_SKIP_LOW_CONFIDENCE_PAGES', false),
     'low_confidence_page_strategy' => env('PDF_LINE_LOW_CONFIDENCE_PAGE_STRATEGY', 'skip'),
@@ -64,7 +67,10 @@ return [
     'ocr_trigger_page_confidence' => (float) env('PDF_LINE_OCR_TRIGGER_PAGE_CONFIDENCE', 0.4),
     'image_page_coverage_threshold' => (float) env('PDF_LINE_IMAGE_PAGE_COVERAGE_THRESHOLD', 0.62),
     'image_page_axis_coverage_threshold' => (float) env('PDF_LINE_IMAGE_PAGE_AXIS_COVERAGE_THRESHOLD', 0.78),
-    'enable_ocr_grid_reconstruction' => (bool) env('PDF_LINE_ENABLE_OCR_GRID_RECONSTRUCTION', true),
+    // Off by default: grid reconstruction INSERTS synthetic anchors for blank
+    // gaps, which over-numbers a page when tenthlining counts only lines that
+    // carry text. Enable only for documents that number every ruled line.
+    'enable_ocr_grid_reconstruction' => (bool) env('PDF_LINE_ENABLE_OCR_GRID_RECONSTRUCTION', false),
     'ocr_grid_min_trusted_lines' => (int) env('PDF_LINE_OCR_GRID_MIN_TRUSTED_LINES', 6),
     'ocr_grid_min_spacing_pt' => (float) env('PDF_LINE_OCR_GRID_MIN_SPACING_PT', 10.0),
     'ocr_grid_max_spacing_pt' => (float) env('PDF_LINE_OCR_GRID_MAX_SPACING_PT', 36.0),

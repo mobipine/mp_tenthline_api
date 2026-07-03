@@ -45,10 +45,10 @@ class PdfLineExtractorTest extends TestCase
         @unlink($inputPath);
     }
 
-    public function test_it_skips_whole_document_textract_for_a_single_minor_candidate_page_in_a_large_pdf(): void
+    public function test_it_skips_whole_document_paddleocr_for_a_single_minor_candidate_page_in_a_large_pdf(): void
     {
         $extractor = app(PdfLineExtractor::class);
-        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method = new \ReflectionMethod($extractor, 'paddleOcrEligibilityDecision');
         $method->setAccessible(true);
 
         $pages = [];
@@ -66,13 +66,13 @@ class PdfLineExtractorTest extends TestCase
         ]);
 
         $this->assertFalse($decision['should_use']);
-        $this->assertSame('candidate_pages_do_not_justify_whole_document_textract', $decision['reason']);
+        $this->assertSame('candidate_pages_do_not_justify_whole_document_ocr', $decision['reason']);
     }
 
-    public function test_it_uses_textract_for_a_document_that_has_no_extractable_lines(): void
+    public function test_it_uses_paddleocr_for_a_document_that_has_no_extractable_lines(): void
     {
         $extractor = app(PdfLineExtractor::class);
-        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method = new \ReflectionMethod($extractor, 'paddleOcrEligibilityDecision');
         $method->setAccessible(true);
 
         $decision = $method->invoke($extractor, [
@@ -90,10 +90,10 @@ class PdfLineExtractorTest extends TestCase
         $this->assertSame('document_looks_scanned_or_ocr_dependent', $decision['reason']);
     }
 
-    public function test_it_uses_textract_for_pages_that_are_mostly_image_based(): void
+    public function test_it_uses_paddleocr_for_pages_that_are_mostly_image_based(): void
     {
         $extractor = app(PdfLineExtractor::class);
-        $method = new \ReflectionMethod($extractor, 'textractEligibilityDecision');
+        $method = new \ReflectionMethod($extractor, 'paddleOcrEligibilityDecision');
         $method->setAccessible(true);
 
         $decision = $method->invoke($extractor, [

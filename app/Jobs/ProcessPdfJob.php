@@ -88,9 +88,9 @@ class ProcessPdfJob implements ShouldQueue
         Log::info('[TenthLine] ProcessPdfJob: Processing with options', [
             'job_id' => $this->pdfJobId,
             'line_interval' => $job->line_interval ?? 10,
-            'margin' => $job->margin ?? 'left',
+            'margin' => $job->margin ?? 'right',
             'font_size_pt' => $job->font_size_pt ?? 8,
-            'textract_enabled' => (bool) config('textract.enabled', false),
+            'paddleocr_enabled' => (bool) config('paddleocr.enabled', false),
         ]);
 
         $startTime = microtime(true);
@@ -119,7 +119,7 @@ class ProcessPdfJob implements ShouldQueue
                 $inputPath,
                 $outputPath,
                 (int) ($job->line_interval ?? 10),
-                $job->margin ?? 'left',
+                $job->margin ?? 'right',
                 $job->font_size_pt ?? 8,
                 function (int $pageNo, int $total) use ($startTime, &$pageProgressFloor) {
                     $progress = $this->mapPageProgress($pageNo, $total, $pageProgressFloor);
@@ -303,7 +303,7 @@ class ProcessPdfJob implements ShouldQueue
         $ocr = is_array($runDiagnostics['extractor_summary']['ocr'] ?? null)
             ? $runDiagnostics['extractor_summary']['ocr']
             : [];
-        $textract = is_array($ocr['textract'] ?? null) ? $ocr['textract'] : [];
+        $paddleOcr = is_array($ocr['paddleocr'] ?? null) ? $ocr['paddleocr'] : [];
         $local = is_array($ocr['local'] ?? null) ? $ocr['local'] : [];
         $candidatePages = is_array($ocr['candidate_pages'] ?? null) ? $ocr['candidate_pages'] : [];
         $pagesReplaced = is_array($ocr['pages_replaced'] ?? null) ? $ocr['pages_replaced'] : [];
@@ -313,8 +313,8 @@ class ProcessPdfJob implements ShouldQueue
         ));
 
         $provider = null;
-        if (($textract['pages_replaced'] ?? []) !== []) {
-            $provider = 'textract';
+        if (($paddleOcr['pages_replaced'] ?? []) !== []) {
+            $provider = 'paddleocr';
         } elseif (($local['pages_replaced'] ?? []) !== []) {
             $provider = 'tesseract';
         } elseif ($providersUsed !== []) {
@@ -328,21 +328,21 @@ class ProcessPdfJob implements ShouldQueue
             } elseif ($pagesReplaced !== []) {
                 $status = 'partial';
             } else {
-                $status = (($textract['error'] ?? null) || (($local['pages_attempted'] ?? []) !== []))
+                $status = (($paddleOcr['error'] ?? null) || (($local['pages_attempted'] ?? []) !== []))
                     ? 'failed'
                     : 'not_needed';
             }
         }
 
-        $errorMessage = $textract['error'] ?? null;
+        $errorMessage = $paddleOcr['error'] ?? null;
 
         return [
             'ocr_provider' => $provider,
             'ocr_status' => $status,
-            'ocr_job_id' => $textract['job_id'] ?? null,
-            'ocr_started_at' => $this->normalizeDatabaseTimestamp($textract['started_at'] ?? null),
-            'ocr_completed_at' => $this->normalizeDatabaseTimestamp($textract['completed_at'] ?? null),
-            'ocr_result_path' => $textract['result_path'] ?? null,
+            'ocr_job_id' => $paddleOcr['job_id'] ?? null,
+            'ocr_started_at' => $this->normalizeDatabaseTimestamp($paddleOcr['started_at'] ?? null),
+            'ocr_completed_at' => $this->normalizeDatabaseTimestamp($paddleOcr['completed_at'] ?? null),
+            'ocr_result_path' => $paddleOcr['result_path'] ?? null,
             'ocr_error_message' => $errorMessage,
             'ocr_diagnostics' => $ocr !== [] ? $ocr : null,
         ];

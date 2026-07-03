@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Services\Scanned\TextractJobCoordinator;
+use App\Services\Scanned\PaddleOcrJobCoordinator;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Smalot\PdfParser\Config;
@@ -29,7 +29,7 @@ class PdfLineExtractor
         private readonly PdfLineConfidenceScorer $confidenceScorer,
         private readonly PdfOcrLineGridBuilder $ocrLineGridBuilder,
         private readonly PdfScannedPageClassifier $scannedPageClassifier,
-        private readonly TextractJobCoordinator $textractJobCoordinator
+        private readonly PaddleOcrJobCoordinator $paddleOcrJobCoordinator
     ) {}
 
     /**
@@ -51,7 +51,7 @@ class PdfLineExtractor
                 'pages_replaced' => [],
                 'providers_attempted' => [],
                 'providers_used' => [],
-                'textract' => null,
+                'paddleocr' => null,
                 'local' => null,
             ],
         ];
@@ -626,57 +626,57 @@ class PdfLineExtractor
             'engine' => $engine,
             'candidate_pages' => array_keys($candidatePages),
             'candidate_details' => $candidatePages,
-            'textract_enabled' => $this->textractJobCoordinator->enabled(),
+            'paddleocr_enabled' => $this->paddleOcrJobCoordinator->enabled(),
             'local_ocr_enabled' => (bool) config('line_numbering.enable_ocr_fallback', false),
         ]);
 
-        $textractDecision = $this->textractEligibilityDecision($pages, $candidatePages);
-        $this->lastDiagnostics['ocr']['textract_decision'] = $textractDecision;
+        $paddleOcrDecision = $this->paddleOcrEligibilityDecision($pages, $candidatePages);
+        $this->lastDiagnostics['ocr']['paddleocr_decision'] = $paddleOcrDecision;
 
-        if ($this->textractJobCoordinator->enabled() && ($textractDecision['should_use'] ?? false)) {
-            $this->lastDiagnostics['ocr']['providers_attempted'][] = 'textract';
+        if ($this->paddleOcrJobCoordinator->enabled() && ($paddleOcrDecision['should_use'] ?? false)) {
+            $this->lastDiagnostics['ocr']['providers_attempted'][] = 'paddleocr';
 
             try {
-                $textractRun = $this->extractPagesUsingTextract($inputPath, $pages, $candidatePages, $context);
-                $this->lastDiagnostics['ocr']['textract'] = $textractRun['summary'];
+                $paddleOcrRun = $this->extractPagesUsingPaddleOcr($inputPath, $pages, $candidatePages, $context);
+                $this->lastDiagnostics['ocr']['paddleocr'] = $paddleOcrRun['summary'];
 
-                foreach ($textractRun['pages'] as $pageNo => $ocrPage) {
+                foreach ($paddleOcrRun['pages'] as $pageNo => $ocrPage) {
                     $ocrPage['used_ocr_fallback'] = true;
                     $ocrPage['page_rotation'] = (int) ($pages[$pageNo]['page_rotation'] ?? 0);
                     $replacements[$pageNo] = $ocrPage;
                     unset($remainingPages[$pageNo]);
                 }
 
-                if ($textractRun['pages'] !== []) {
-                    $this->lastDiagnostics['ocr']['providers_used'][] = 'textract';
+                if ($paddleOcrRun['pages'] !== []) {
+                    $this->lastDiagnostics['ocr']['providers_used'][] = 'paddleocr';
                 }
             } catch (\Throwable $e) {
-                $this->lastDiagnostics['ocr']['textract'] = [
+                $this->lastDiagnostics['ocr']['paddleocr'] = [
                     'status' => 'failed',
                     'error' => $e->getMessage(),
                     'pages_replaced' => [],
                 ];
 
-                Log::warning('[TenthLine] PdfLineExtractor: Textract fallback failed, will try local OCR if available', [
+                Log::warning('[TenthLine] PdfLineExtractor: PaddleOCR fallback failed, will try local OCR if available', [
                     'input_path' => $inputPath,
                     'engine' => $engine,
                     'candidate_pages' => array_keys($candidatePages),
                     'message' => $e->getMessage(),
                 ]);
             }
-        } elseif ($this->textractJobCoordinator->enabled()) {
-            $this->lastDiagnostics['ocr']['textract'] = [
+        } elseif ($this->paddleOcrJobCoordinator->enabled()) {
+            $this->lastDiagnostics['ocr']['paddleocr'] = [
                 'status' => 'skipped',
-                'reason' => $textractDecision['reason'] ?? 'not_eligible',
+                'reason' => $paddleOcrDecision['reason'] ?? 'not_eligible',
                 'pages_replaced' => [],
             ];
 
-            Log::info('[TenthLine] PdfLineExtractor: skipping Textract fallback for this document', [
+            Log::info('[TenthLine] PdfLineExtractor: skipping PaddleOCR fallback for this document', [
                 'input_path' => $inputPath,
                 'engine' => $engine,
                 'candidate_pages' => array_keys($candidatePages),
-                'reason' => $textractDecision['reason'] ?? 'not_eligible',
-                'summary' => $textractDecision,
+                'reason' => $paddleOcrDecision['reason'] ?? 'not_eligible',
+                'summary' => $paddleOcrDecision,
             ]);
         }
 
@@ -744,7 +744,7 @@ class PdfLineExtractor
      * @param  array<int, array<string, mixed>>  $candidatePages
      * @return array<string, mixed>
      */
-    private function textractEligibilityDecision(array $pages, array $candidatePages): array
+    private function paddleOcrEligibilityDecision(array $pages, array $candidatePages): array
     {
         $totalPages = count($pages);
         $candidateCount = count($candidatePages);
@@ -791,7 +791,7 @@ class PdfLineExtractor
 
         return [
             'should_use' => false,
-            'reason' => 'candidate_pages_do_not_justify_whole_document_textract',
+            'reason' => 'candidate_pages_do_not_justify_whole_document_ocr',
             'total_pages' => $totalPages,
             'candidate_count' => $candidateCount,
             'candidate_ratio' => $candidateRatio,
@@ -892,7 +892,7 @@ class PdfLineExtractor
     private function ocrFallbackEnabled(): bool
     {
         return (bool) config('line_numbering.enable_ocr_fallback', false)
-            || $this->textractJobCoordinator->enabled();
+            || $this->paddleOcrJobCoordinator->enabled();
     }
 
     private function localOcrAvailable(): bool
@@ -906,25 +906,31 @@ class PdfLineExtractor
      * @param  array<int, array<string, mixed>>  $candidatePages
      * @return array{pages: array<int, array<string, mixed>>, summary: array<string, mixed>}
      */
-    private function extractPagesUsingTextract(string $inputPath, array $pages, array $candidatePages, array $context = []): array
+    private function extractPagesUsingPaddleOcr(string $inputPath, array $pages, array $candidatePages, array $context = []): array
     {
         $pdfJobId = $this->resolveProcessingJobId($inputPath, $context);
-        $pageDimensions = $this->textractJobCoordinator->resolvePageDimensions($inputPath);
+        $pageDimensions = $this->paddleOcrJobCoordinator->resolvePageDimensions($inputPath);
 
-        Log::info('[TenthLine] PdfLineExtractor: starting Textract OCR fallback', [
+        Log::info('[TenthLine] PdfLineExtractor: starting PaddleOCR fallback', [
             'input_path' => $inputPath,
             'pdf_job_id' => $pdfJobId,
             'candidate_pages' => array_keys($candidatePages),
             'page_dimensions_resolved' => count($pageDimensions),
         ]);
 
-        $textractOptions = [];
+        $paddleOcrOptions = [];
         $processingStateCallback = $context['processing_state_callback'] ?? null;
         if (is_callable($processingStateCallback)) {
-            $textractOptions['progress_callback'] = $processingStateCallback;
+            $paddleOcrOptions['progress_callback'] = $processingStateCallback;
         }
 
-        $run = $this->textractJobCoordinator->runSynchronous($pdfJobId, $inputPath, $pageDimensions, $textractOptions);
+        $run = $this->paddleOcrJobCoordinator->run(
+            $pdfJobId,
+            $inputPath,
+            $pageDimensions,
+            array_map('intval', array_keys($candidatePages)),
+            $paddleOcrOptions
+        );
         $normalizedPages = is_array($run['pages'] ?? null) ? $run['pages'] : [];
         $replacements = [];
 
@@ -934,7 +940,7 @@ class PdfLineExtractor
                 continue;
             }
 
-            $ocrPage['ocr_provider'] = 'textract';
+            $ocrPage['ocr_provider'] = 'paddleocr';
             $ocrPage['used_ocr_fallback'] = true;
             $ocrPage['page_rotation'] = (int) ($pages[$pageNo]['page_rotation'] ?? 0);
             $replacements[$pageNo] = $ocrPage;
@@ -943,20 +949,17 @@ class PdfLineExtractor
         $summary = [
             'status' => $run['status'] ?? 'UNKNOWN',
             'job_id' => $run['job_id'] ?? null,
-            'bucket' => $run['bucket'] ?? null,
-            'source_key' => $run['source_key'] ?? null,
             'result_path' => $run['result_path'] ?? null,
             'started_at' => $run['started_at'] ?? null,
             'completed_at' => $run['completed_at'] ?? null,
-            'poll_attempts' => $run['poll_attempts'] ?? null,
             'status_message' => $run['status_message'] ?? null,
             'pages_available' => array_keys($normalizedPages),
+            'pages_attempted' => $run['pages_attempted'] ?? array_keys($candidatePages),
             'pages_replaced' => array_keys($replacements),
             'warnings' => $run['warnings'] ?? [],
-            'source_deleted' => $run['source_deleted'] ?? false,
         ];
 
-        Log::info('[TenthLine] PdfLineExtractor: Textract OCR fallback completed', [
+        Log::info('[TenthLine] PdfLineExtractor: PaddleOCR fallback completed', [
             'input_path' => $inputPath,
             'pdf_job_id' => $pdfJobId,
             'job_id' => $summary['job_id'],
