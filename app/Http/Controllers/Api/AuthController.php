@@ -189,7 +189,7 @@ class AuthController extends Controller
                 Notification::route('mail', $email)->notify($notification);
             }
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] auth.otp.send_failed', [
+            Log::warning('[TenthLine] auth.otp.send_failed', [
                 'email' => $email,
                 'message' => $e->getMessage(),
             ]);
@@ -231,7 +231,7 @@ class AuthController extends Controller
             $customerRole = Role::findOrCreate('customer');
             $user->assignRole($customerRole);
         } catch (\Throwable $e) {
-            Log::warning('[LegalLine] auth.customer_role_assignment_failed', [
+            Log::warning('[TenthLine] auth.customer_role_assignment_failed', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'message' => $e->getMessage(),
@@ -244,6 +244,6 @@ class AuthController extends Controller
         $localPart = Str::before($email, '@');
         $label = trim(str_replace(['.', '_', '-'], ' ', $localPart));
 
-        return Str::title($label ?: 'LegalLine Customer');
+        return Str::title($label ?: 'TenthLine Customer');
     }
 }

@@ -34,7 +34,7 @@ class PdfLineNumberService
         string $inputPath,
         string $outputPath,
         int $lineInterval = 10,
-        string $margin = 'left',
+        string $margin = 'right',
         int $fontSizePt = 8,
         ?callable $onPageProcessed = null,
         array $context = []
@@ -48,7 +48,7 @@ class PdfLineNumberService
         $skipTablePages = (bool) config('line_numbering.skip_table_pages', false);
         $minimumPageConfidence = max(0.05, min(0.95, (float) config('line_numbering.minimum_page_confidence', 0.58)));
 
-        Log::info('[LegalLine] PdfLineNumberService: line numbering started', [
+        Log::info('[TenthLine] PdfLineNumberService: line numbering started', [
             'input_path' => $inputPath,
             'output_path' => $outputPath,
             'line_interval' => $lineInterval,
@@ -77,7 +77,7 @@ class PdfLineNumberService
 
             $pdf = new Fpdi('P', 'pt');
             $pageCount = $pdf->setSourceFile($effectiveInputPath);
-            Log::debug('[LegalLine] PdfLineNumberService: source opened', [
+            Log::debug('[TenthLine] PdfLineNumberService: source opened', [
                 'page_count' => $pageCount,
                 'normalized_input' => $compatibleSource['normalized'],
             ]);
@@ -198,7 +198,7 @@ class PdfLineNumberService
                     'diagnostics' => $pageDiagnostics,
                 ];
 
-                Log::debug('[LegalLine] PdfLineNumberService: page processed', [
+                Log::debug('[TenthLine] PdfLineNumberService: page processed', [
                     'page' => $pageNo,
                     'total_pages' => $pageCount,
                     'lines_on_page' => count($lineAnchors),
@@ -230,7 +230,7 @@ class PdfLineNumberService
                 ],
             ];
 
-            Log::info('[LegalLine] PdfLineNumberService: output written', [
+            Log::info('[TenthLine] PdfLineNumberService: output written', [
                 'output_path' => $outputPath,
                 'total_pages' => $pageCount,
                 'total_labels_drawn' => $totalLabelsDrawn,

@@ -10,7 +10,7 @@ class PdfFpdiCompatibilityServiceTest extends TestCase
 {
     public function test_it_returns_original_path_for_already_supported_pdfs(): void
     {
-        $inputPath = sys_get_temp_dir() . '/legalline_test_compatible_original_' . uniqid() . '.pdf';
+        $inputPath = sys_get_temp_dir() . '/tenthline_test_compatible_original_' . uniqid() . '.pdf';
         $this->createSamplePdf($inputPath, 12);
 
         $service = app(PdfFpdiCompatibilityService::class);
@@ -33,8 +33,8 @@ class PdfFpdiCompatibilityServiceTest extends TestCase
             $this->markTestSkipped('qpdf command not available on this machine.');
         }
 
-        $basePath = sys_get_temp_dir() . '/legalline_test_qpdf_base_' . uniqid() . '.pdf';
-        $incompatiblePath = sys_get_temp_dir() . '/legalline_test_qpdf_incompatible_' . uniqid() . '.pdf';
+        $basePath = sys_get_temp_dir() . '/tenthline_test_qpdf_base_' . uniqid() . '.pdf';
+        $incompatiblePath = sys_get_temp_dir() . '/tenthline_test_qpdf_incompatible_' . uniqid() . '.pdf';
         $this->createSamplePdf($basePath, 14);
         $this->createObjectStreamPdf($basePath, $incompatiblePath);
 

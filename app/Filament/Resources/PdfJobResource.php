@@ -18,7 +18,7 @@ class PdfJobResource extends Resource
     protected static ?string $model = PdfJob::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-document-text';
-    protected static ?string $navigationGroup = 'LegalLine';
+    protected static ?string $navigationGroup = 'TenthLine';
     protected static ?string $modelLabel = 'PDF Job';
     protected static ?string $pluralModelLabel = 'PDF Jobs';
 

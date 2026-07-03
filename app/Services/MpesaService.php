@@ -102,7 +102,7 @@ class MpesaService
             'PhoneNumber' => (int) $phone,
             'CallBackURL' => rtrim($this->callbackUrl(), '/') . '/api/webhooks/mpesa',
             'AccountReference' => $reference,
-            'TransactionDesc' => 'LegalLine PDF processing',
+            'TransactionDesc' => 'TenthLine PDF processing',
         ];
 
         Log::info('Initiating M-Pesa STK Push', $payload);

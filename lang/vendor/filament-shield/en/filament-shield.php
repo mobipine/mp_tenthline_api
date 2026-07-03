@@ -1,5 +1,5 @@
 <?php
 
 return [
-    'nav.group' => 'LegalLine',
+    'nav.group' => 'TenthLine',
 ];

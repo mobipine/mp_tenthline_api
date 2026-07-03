@@ -1,0 +1,7 @@
+paddlepaddle
+paddleocr
+opencv-contrib-python==4.10.0.84
+fastapi
+uvicorn
+python-multipart
+rapidocr-onnxruntime

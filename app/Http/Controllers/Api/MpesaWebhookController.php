@@ -12,14 +12,14 @@ class MpesaWebhookController extends Controller
 {
     public function handle(Request $request): JsonResponse
     {
-        Log::info('[LegalLine] mpesa.webhook.received', $request->all());
+        Log::info('[TenthLine] mpesa.webhook.received', $request->all());
 
         $body = $request->all();
         $callback = $body['Body'] ?? $body;
         $stkCallback = $callback['stkCallback'] ?? null;
 
         if (! $stkCallback) {
-            Log::warning('[LegalLine] mpesa.webhook.missing_stk_callback');
+            Log::warning('[TenthLine] mpesa.webhook.missing_stk_callback');
             return response()->json(['ResultCode' => 0, 'ResultDesc' => 'Accepted']);
         }
 
@@ -30,7 +30,7 @@ class MpesaWebhookController extends Controller
         $payment = Payment::where('mpesa_checkout_request_id', $checkoutRequestId)->first();
 
         if (! $payment) {
-            Log::warning('[LegalLine] mpesa.webhook.payment_not_found', [
+            Log::warning('[TenthLine] mpesa.webhook.payment_not_found', [
                 'checkout_request_id' => $checkoutRequestId,
                 'result_code' => $resultCode,
             ]);
@@ -43,7 +43,7 @@ class MpesaWebhookController extends Controller
                 'mpesa_result_code' => (string) $resultCode,
                 'mpesa_callback_payload' => $body,
             ]);
-            Log::info('[LegalLine] mpesa.webhook.payment_completed', [
+            Log::info('[TenthLine] mpesa.webhook.payment_completed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,
             ]);
@@ -53,7 +53,7 @@ class MpesaWebhookController extends Controller
                 'mpesa_result_code' => (string) $resultCode,
                 'mpesa_callback_payload' => $body,
             ]);
-            Log::warning('[LegalLine] mpesa.webhook.payment_failed', [
+            Log::warning('[TenthLine] mpesa.webhook.payment_failed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,
                 'result_code' => $resultCode,
