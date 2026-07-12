@@ -36,7 +36,18 @@ class ProcessPdfJob implements ShouldQueue
 
     public int $tries = 2;
 
-    public int $timeout = 3600;
+    // Large scanned documents OCR at roughly 5-6 seconds per page on the
+    // production host, so a 500+ page record of appeal legitimately needs a
+    // few hours. Keep this below the queue connection's retry_after value
+    // (REDIS_QUEUE_RETRY_AFTER) or the job will be handed to a second worker
+    // and processed twice in parallel.
+    public int $timeout = 14400;
+
+    // Retrying after a timeout would re-run the whole multi-hour pipeline
+    // from scratch; surface the failure to the user instead.
+    public bool $failOnTimeout = true;
+
+    protected float $lastPageProgressPublishedAt = 0.0;
 
     public function __construct(
         public string $pdfJobId
@@ -138,6 +149,15 @@ class ProcessPdfJob implements ShouldQueue
                         'message' => 'We are placing line numbers across the document.',
                         'detail' => "Page {$pageNo} of {$total}",
                     ];
+
+                    // Persisting/broadcasting every page floods the database,
+                    // the log, and the websocket on large documents; a 2-second
+                    // cadence is indistinguishable in the UI.
+                    $now = microtime(true);
+                    if ($pageNo !== 1 && $pageNo !== $total && ($now - $this->lastPageProgressPublishedAt) < 2.0) {
+                        return;
+                    }
+                    $this->lastPageProgressPublishedAt = $now;
 
                     $update = [
                         'total_pages' => $total,
