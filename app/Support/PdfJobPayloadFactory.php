@@ -16,10 +16,16 @@ class PdfJobPayloadFactory
             'total_pages' => (int) $job->total_pages,
             'eta_seconds' => $job->eta_seconds !== null ? (int) $job->eta_seconds : null,
             'error_message' => $job->error_message,
+            'error_code' => $job->error_code?->value,
+            'payable_pages' => $job->payable_pages,
+            'payment_deadline_at' => optional($job->payment_deadline_at)->toIso8601String(),
             'storage_deleted_at' => optional($job->storage_deleted_at)->toIso8601String(),
             'updated_at' => optional($job->updated_at)->toIso8601String(),
             'download_url' => $job->status === 'completed' && $job->output_path
                 ? url("/api/job/{$job->id}/download")
+                : null,
+            'report_url' => $job->processingReport
+                ? url("/api/job/{$job->id}/report")
                 : null,
         ];
 
@@ -65,6 +71,15 @@ class PdfJobPayloadFactory
                 'processing_stage' => 'completed',
                 'processing_label' => 'Document ready',
                 'processing_message' => 'Your PDF has been numbered and is ready to download.',
+                'processing_detail' => null,
+            ];
+        }
+
+        if ($status === 'awaiting_payment') {
+            return [
+                'processing_stage' => 'awaiting_payment',
+                'processing_label' => 'Awaiting payment',
+                'processing_message' => 'Processing complete. Review your report and complete payment to download.',
                 'processing_detail' => null,
             ];
         }

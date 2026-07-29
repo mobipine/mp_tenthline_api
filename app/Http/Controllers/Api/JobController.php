@@ -26,15 +26,51 @@ class JobController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        Log::info('[TenthLine] job.show', [
-            'job_id' => $job->id,
-            'status' => $job->status,
-            'progress' => $job->progress,
-            'processed_pages' => $job->processed_pages,
-            'total_pages' => $job->total_pages,
-        ]);
-
         return response()->json(PdfJobPayloadFactory::fromModel($job));
+    }
+
+    public function report(Request $request, string $id): JsonResponse
+    {
+        $job = PdfJob::with(['processingReport.pageResults'])->findOrFail($id);
+
+        if ($request->user() && $job->user_id && (int) $request->user()->id !== (int) $job->user_id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $report = $job->processingReport;
+
+        if (! $report) {
+            return response()->json(['message' => 'Processing report not available yet.'], 404);
+        }
+
+        return response()->json([
+            'report' => [
+                'id' => $report->id,
+                'uploaded_pages' => $report->uploaded_pages,
+                'successful_pages' => $report->successful_pages,
+                'low_confidence_pages' => $report->low_confidence_pages,
+                'failed_pages' => $report->failed_pages,
+                'payable_pages' => $report->payable_pages,
+                'unit_price' => (float) $report->unit_price,
+                'total_amount' => (float) $report->total_amount,
+                'currency' => $report->currency,
+                'bill_low_confidence_pages' => (bool) $report->bill_low_confidence_pages,
+                'created_at' => $report->created_at?->toIso8601String(),
+            ],
+            'pages' => $report->pageResults->map(fn ($p) => [
+                'page_number' => $p->page_number,
+                'status' => $p->status->value,
+                'ocr_confidence' => $p->ocr_confidence !== null ? round((float) $p->ocr_confidence, 4) : null,
+                'text_box_count' => $p->text_box_count,
+                'extracted_chars' => $p->extracted_chars,
+                'page_coverage_pct' => $p->page_coverage_pct !== null ? round((float) $p->page_coverage_pct, 4) : null,
+                'placement_mode' => $p->placement_mode,
+                'line_labels_applied' => $p->line_labels_applied,
+                'is_billable' => (bool) $p->is_billable,
+                'notes' => $p->notes,
+            ])->values(),
+            'payment_deadline_at' => $job->payment_deadline_at?->toIso8601String(),
+        ]);
     }
 
     public function download(Request $request, string $id): StreamedResponse|JsonResponse
@@ -50,38 +86,21 @@ class JobController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        Log::info('[TenthLine] job.download.requested', [
-            'job_id' => $job->id,
-            'status' => $job->status,
-            'output_path' => $job->output_path,
-        ]);
-
         if ($job->status === 'deleted' || $job->storage_deleted_at) {
             return response()->json(['message' => 'This file has been deleted after retention period.'], 410);
         }
 
         if ($job->status !== 'completed' || ! $job->output_path) {
-            Log::warning('[TenthLine] job.download.not_ready', ['job_id' => $job->id]);
             return response()->json(['message' => 'File not ready for download.'], 404);
         }
 
         if (! Storage::disk('local')->exists($job->output_path)) {
-            Log::warning('[TenthLine] job.download.missing_output', [
-                'job_id' => $job->id,
-                'output_path' => $job->output_path,
-            ]);
             return response()->json(['message' => 'File no longer available.'], 404);
         }
 
-        $filename = 'numbered-' . $job->filename;
-        Log::info('[TenthLine] job.download.success', [
-            'job_id' => $job->id,
-            'filename' => $filename,
-        ]);
-
         return Storage::disk('local')->download(
             $job->output_path,
-            $filename,
+            'numbered-' . $job->filename,
             ['Content-Type' => 'application/pdf']
         );
     }
