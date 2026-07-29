@@ -2,9 +2,11 @@
 
 namespace App\Models;
 
+use App\Enums\JobErrorCode;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class PdfJob extends Model
 {
@@ -36,6 +38,10 @@ class PdfJob extends Model
         'ocr_error_message',
         'ocr_diagnostics',
         'storage_deleted_at',
+        'error_code',
+        'processing_report_id',
+        'payable_pages',
+        'payment_deadline_at',
     ];
 
     protected $casts = [
@@ -50,6 +56,9 @@ class PdfJob extends Model
         'ocr_completed_at' => 'datetime',
         'ocr_diagnostics' => 'array',
         'storage_deleted_at' => 'datetime',
+        'error_code' => JobErrorCode::class,
+        'payable_pages' => 'integer',
+        'payment_deadline_at' => 'datetime',
     ];
 
     public function payment(): BelongsTo
@@ -60,5 +69,25 @@ class PdfJob extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function processingReport(): HasOne
+    {
+        return $this->hasOne(ProcessingReport::class, 'pdf_job_id');
+    }
+
+    public function supportTickets(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(SupportTicket::class, 'pdf_job_id');
+    }
+
+    public function isAwaitingPayment(): bool
+    {
+        return $this->status === 'awaiting_payment';
+    }
+
+    public function isPaymentDeadlineExpired(): bool
+    {
+        return $this->payment_deadline_at !== null && $this->payment_deadline_at->isPast();
     }
 }
