@@ -132,6 +132,7 @@ class PdfJobResource extends Resource
                     ->options([
                         'pending' => 'Pending',
                         'processing' => 'Processing',
+                        'awaiting_payment' => 'Awaiting Payment',
                         'completed' => 'Completed',
                         'failed' => 'Failed',
                         'deleted' => 'Deleted',
