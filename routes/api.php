@@ -16,7 +16,7 @@ Route::get('config', [ConfigController::class, 'show']);
 Route::get('legal/terms', [LegalController::class, 'terms']);
 Route::get('legal/privacy', [LegalController::class, 'privacy']);
 
-Route::post('support/tickets', [SupportTicketController::class, 'store'])->middleware('throttle:10,1');
+Route::post('support/tickets', [SupportTicketController::class, 'store'])->middleware(['auth:sanctum', 'throttle:10,1']);
 
 Route::prefix('auth')->group(function () {
     Route::post('register', [AuthController::class, 'register']);

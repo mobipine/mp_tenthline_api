@@ -8,6 +8,7 @@ use Filament\Infolists\Components\Grid;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\Section;
 use Filament\Infolists\Components\TextEntry;
+use Filament\Infolists\Components\ViewEntry;
 use Filament\Infolists\Infolist;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Support\Enums\FontWeight;
@@ -135,83 +136,11 @@ class ViewPdfJob extends ViewRecord
                                 ->placeholder('—')
                                 ->columnSpanFull()
                                 ->hidden(fn ($record) => blank($record->notes)),
-                            TextEntry::make('raw_diagnostics')
+                            ViewEntry::make('raw_diagnostics')
                                 ->label('OCR Diagnostics')
-                                ->html()
+                                ->view('filament.infolists.ocr-diagnostics')
                                 ->columnSpanFull()
-                                ->hidden(fn ($record) => blank($record->raw_diagnostics))
-                                ->formatStateUsing(function ($state): string {
-                                    if (blank($state)) {
-                                        return '';
-                                    }
-
-                                    $data = is_string($state) ? json_decode($state, true) : $state;
-                                    if (! is_array($data)) {
-                                        return '<em style="color:#6b7280">No diagnostic data</em>';
-                                    }
-
-                                    $scoredLines = is_array($data['scored_lines'] ?? null) ? $data['scored_lines'] : [];
-                                    $engine = htmlspecialchars((string) ($data['engine'] ?? 'unknown'));
-                                    $pageW = round((float) ($data['page_width'] ?? 0), 0);
-                                    $pageH = round((float) ($data['page_height'] ?? 0), 0);
-                                    $boxCount = count($scoredLines);
-
-                                    if ($boxCount === 0) {
-                                        return "<details style='font-size:0.8rem'>
-                                            <summary style='cursor:pointer;color:#6b7280'>
-                                                Engine: <strong>{$engine}</strong> · {$pageW}×{$pageH}px · No OCR boxes
-                                            </summary>
-                                        </details>";
-                                    }
-
-                                    $rows = '';
-                                    foreach ($scoredLines as $line) {
-                                        if (! is_array($line)) {
-                                            continue;
-                                        }
-                                        $text = htmlspecialchars(mb_strimwidth((string) ($line['text'] ?? ''), 0, 80, '…'));
-                                        $conf = round((float) ($line['confidence'] ?? 0) * 100, 1);
-                                        $chars = (int) ($line['char_count'] ?? mb_strlen((string) ($line['text'] ?? '')));
-                                        $xStart = round((float) ($line['x_start'] ?? 0));
-                                        $xEnd = round((float) ($line['x_end'] ?? 0));
-                                        $height = round((float) ($line['height'] ?? 0));
-                                        $y = round((float) ($line['y'] ?? 0));
-
-                                        $confColor = $conf >= 90 ? '#15803d' : ($conf >= 60 ? '#b45309' : '#b91c1c');
-
-                                        $rows .= "<tr>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-family:monospace;font-size:0.72rem;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{$text}</td>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-size:0.72rem;color:{$confColor};font-weight:700;text-align:right'>{$conf}%</td>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-size:0.72rem;text-align:right'>{$chars}</td>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-size:0.72rem;text-align:right'>{$xStart}–{$xEnd}</td>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-size:0.72rem;text-align:right'>{$height}</td>
-                                            <td style='padding:3px 8px;border:1px solid #e5e7eb;font-size:0.72rem;text-align:right'>{$y}</td>
-                                        </tr>";
-                                    }
-
-                                    return "<details style='font-size:0.8rem'>
-                                        <summary style='cursor:pointer;user-select:none;color:#4b5563;padding:4px 0'>
-                                            Engine: <strong style='color:#111827'>{$engine}</strong>
-                                            &nbsp;·&nbsp; {$pageW}×{$pageH}px
-                                            &nbsp;·&nbsp; {$boxCount} OCR boxes — <span style='color:#2563eb'>click to expand</span>
-                                        </summary>
-                                        <div style='overflow-x:auto;margin-top:8px'>
-                                            <table style='border-collapse:collapse;min-width:600px'>
-                                                <thead>
-                                                    <tr style='background:#f9fafb'>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:left;white-space:nowrap'>Text</th>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:right;white-space:nowrap'>Conf.</th>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:right;white-space:nowrap'>Chars</th>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:right;white-space:nowrap'>X (px)</th>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:right;white-space:nowrap'>H (px)</th>
-                                                        <th style='padding:4px 8px;border:1px solid #e5e7eb;font-size:0.7rem;text-align:right;white-space:nowrap'>Y (px)</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>{$rows}</tbody>
-                                            </table>
-                                        </div>
-                                    </details>";
-                                }),
+                                ->hidden(fn ($record) => blank($record->raw_diagnostics)),
                         ]),
                 ]),
 

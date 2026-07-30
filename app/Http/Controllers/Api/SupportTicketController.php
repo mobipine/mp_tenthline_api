@@ -18,12 +18,22 @@ class SupportTicketController extends Controller
             'email'       => ['required', 'string', 'email', 'max:255'],
             'subject'     => ['required', 'string', 'max:255'],
             'description' => ['required', 'string', 'max:5000'],
-            'job_id'      => ['sometimes', 'nullable', 'string'],
+            'job_id'      => ['required', 'string', 'exists:pdf_jobs,id'],
             'attachment'  => ['sometimes', 'nullable', 'file', 'max:20480', 'mimes:pdf,jpg,jpeg,png,gif,webp,doc,docx'],
         ]);
 
         $user = $request->user();
-        $jobId = $validated['job_id'] ?? null;
+        $jobId = $validated['job_id'];
+
+        $ownsJob = \App\Models\PdfJob::where('id', $jobId)
+            ->where('user_id', $user->id)
+            ->exists();
+
+        if (! $ownsJob) {
+            return response()->json([
+                'message' => 'The selected document does not belong to your account.',
+            ], 403);
+        }
 
         $ticket = SupportTicket::create([
             'reference'   => SupportTicket::generateReference(),
@@ -31,8 +41,8 @@ class SupportTicketController extends Controller
             'subject'     => $validated['subject'],
             'description' => $validated['description'],
             'status'      => 'open',
-            'user_id'     => $user?->id,
-            'pdf_job_id'  => $jobId ?: null,
+            'user_id'     => $user->id,
+            'pdf_job_id'  => $jobId,
         ]);
 
         if ($request->hasFile('attachment') && $request->file('attachment')?->isValid()) {
