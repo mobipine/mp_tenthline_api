@@ -89,6 +89,14 @@ jobs:
                 echo "$REQ_HASH" > "$STAMP"
               fi
 
+              # rapidocr-onnxruntime depends on opencv-python (the GUI build),
+              # which needs libGL.so.1 and crashes the sidecar on this headless
+              # server. Strip GUI builds and keep only the headless one.
+              if .venv/bin/pip show opencv-python >/dev/null 2>&1 || .venv/bin/pip show opencv-contrib-python >/dev/null 2>&1; then
+                .venv/bin/pip uninstall -y opencv-python opencv-contrib-python -q || true
+                .venv/bin/pip install --force-reinstall --no-deps opencv-contrib-python-headless==4.10.0.84 -q
+              fi
+
               cd ..
 
               # Ensure www-data can execute the venv regardless of who owns it.
