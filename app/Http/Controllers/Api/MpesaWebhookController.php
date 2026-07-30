@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
+use App\Models\PdfJob;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -43,16 +44,31 @@ class MpesaWebhookController extends Controller
                 'mpesa_result_code' => (string) $resultCode,
                 'mpesa_callback_payload' => $body,
             ]);
+
             Log::info('[TenthLine] mpesa.webhook.payment_completed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,
+                'job_id' => $payment->pdf_job_id,
             ]);
+
+            if ($payment->pdf_job_id) {
+                $job = PdfJob::find($payment->pdf_job_id);
+                if ($job && $job->status === 'awaiting_payment') {
+                    $job->forceFill(['status' => 'completed'])->save();
+
+                    Log::info('[TenthLine] mpesa.webhook.job_completed', [
+                        'job_id' => $job->id,
+                        'payment_id' => $payment->id,
+                    ]);
+                }
+            }
         } else {
             $payment->update([
                 'status' => 'failed',
                 'mpesa_result_code' => (string) $resultCode,
                 'mpesa_callback_payload' => $body,
             ]);
+
             Log::warning('[TenthLine] mpesa.webhook.payment_failed', [
                 'payment_id' => $payment->id,
                 'reference' => $payment->reference,

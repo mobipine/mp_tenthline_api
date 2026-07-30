@@ -4,8 +4,11 @@ namespace App\Services\Scanned;
 
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
+use Illuminate\Process\InvokedProcessPool;
+use Illuminate\Process\Pool as ProcessPool;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 use setasign\Fpdi\Fpdi;
@@ -69,69 +72,89 @@ class PaddleOcrJobCoordinator
             'ocr_started_at' => $startedAt->toISOString(),
         ]);
 
-        // Phase 1: rasterize every candidate page up front so the OCR requests
-        // can then be dispatched concurrently.
-        $renderedPages = [];
+        // Rasterization and OCR run as a pipeline: while one chunk of pages is
+        // being OCR'd, the next chunk is already rasterizing in parallel
+        // pdftoppm processes, keeping rendering off the critical path. On a
+        // 500+ page scanned document the old render-everything-first phase
+        // alone took ~25 minutes and left hundreds of PNGs on disk.
+        $concurrency = max(1, (int) config('paddleocr.concurrency', 2));
+        $chunkSize = max($concurrency, max(1, min(8, (int) config('paddleocr.render_parallelism', 3))));
+
+        $renderablePages = [];
+        foreach ($candidatePages as $pageNo) {
+            if (! is_array($pageDimensions[$pageNo] ?? null)) {
+                $warnings[] = "Missing page dimensions for page {$pageNo}.";
+                continue;
+            }
+
+            $renderablePages[] = $pageNo;
+        }
+
+        $chunks = array_chunk($renderablePages, $chunkSize);
+        $totalPages = count($renderablePages);
+        $processed = 0;
+        $pendingRender = $chunks !== [] ? $this->startRenderChunk($inputPath, $chunks[0]) : null;
 
         try {
-            foreach ($candidatePages as $pageNo) {
-                if (! is_array($pageDimensions[$pageNo] ?? null)) {
-                    $warnings[] = "Missing page dimensions for page {$pageNo}.";
+            foreach ($chunks as $index => $chunk) {
+                $renderedPages = $this->finishRenderChunk($pendingRender, $warnings);
+                $pendingRender = isset($chunks[$index + 1])
+                    ? $this->startRenderChunk($inputPath, $chunks[$index + 1])
+                    : null;
+
+                $pagesToOcr = array_values(array_intersect($chunk, array_keys($renderedPages)));
+                if ($pagesToOcr === []) {
                     continue;
                 }
 
-                $renderedPages[$pageNo] = $this->renderPageToImage($inputPath, $pageNo);
-            }
+                try {
+                    $chunkLabel = implode(', ', $pagesToOcr);
+                    $this->reportProgress($options, [
+                        'phase' => 'ocr_processing_pages',
+                        'label' => 'Reading scanned pages',
+                        'message' => 'We are reading the scanned pages with PaddleOCR.',
+                        'detail' => "Processing page(s) {$chunkLabel} ({$processed} of {$totalPages} done).",
+                        'progress' => min(46, 18 + (int) floor(($processed / max(1, $totalPages)) * 28)),
+                        'ocr_provider' => 'paddleocr',
+                        'ocr_status' => 'processing',
+                        'ocr_job_id' => $runId,
+                        'ocr_started_at' => $startedAt->toISOString(),
+                    ]);
 
-            // Phase 2: OCR the rendered pages in concurrent batches. The sidecar
-            // is CPU-bound per page, so run it with matching worker processes
-            // (uvicorn --workers N) to realize the parallelism.
-            $concurrency = max(1, (int) config('paddleocr.concurrency', 2));
-            $pageNumbers = array_keys($renderedPages);
-            $totalPages = count($pageNumbers);
-            $processed = 0;
+                    $responses = $this->requestOcrPool($pagesToOcr, $renderedPages);
 
-            foreach (array_chunk($pageNumbers, $concurrency) as $chunk) {
-                $chunkLabel = implode(', ', $chunk);
-                $this->reportProgress($options, [
-                    'phase' => 'ocr_processing_pages',
-                    'label' => 'Reading scanned pages',
-                    'message' => 'We are reading the scanned pages with PaddleOCR.',
-                    'detail' => "Processing page(s) {$chunkLabel} ({$processed} of {$totalPages} done).",
-                    'progress' => min(46, 18 + (int) floor(($processed / max(1, $totalPages)) * 28)),
-                    'ocr_provider' => 'paddleocr',
-                    'ocr_status' => 'processing',
-                    'ocr_job_id' => $runId,
-                    'ocr_started_at' => $startedAt->toISOString(),
-                ]);
+                    foreach ($pagesToOcr as $pageNo) {
+                        $ocrData = $this->parseOcrResponse($responses["page-{$pageNo}"] ?? null, $pageNo);
+                        $pageDimension = $pageDimensions[$pageNo];
+                        $rendered = $renderedPages[$pageNo];
 
-                $responses = $this->requestOcrPool($chunk, $renderedPages);
+                        $normalizedPage = $this->lineNormalizer->normalizePage(
+                            $ocrData,
+                            [
+                                'width' => (float) ($pageDimension['width'] ?? 612.0),
+                                'height' => (float) ($pageDimension['height'] ?? 792.0),
+                            ],
+                            (int) $rendered['image_width'],
+                            (int) $rendered['image_height'],
+                            $pageNo,
+                            $options
+                        );
 
-                foreach ($chunk as $pageNo) {
-                    $ocrData = $this->parseOcrResponse($responses["page-{$pageNo}"] ?? null, $pageNo);
-                    $pageDimension = $pageDimensions[$pageNo];
-                    $rendered = $renderedPages[$pageNo];
-
-                    $normalizedPage = $this->lineNormalizer->normalizePage(
-                        $ocrData,
-                        [
-                            'width' => (float) ($pageDimension['width'] ?? 612.0),
-                            'height' => (float) ($pageDimension['height'] ?? 792.0),
-                        ],
-                        (int) $rendered['image_width'],
-                        (int) $rendered['image_height'],
-                        $pageNo,
-                        $options
-                    );
-
-                    $normalizedPage['page_rotation'] = (int) ($pageDimension['rotation'] ?? 0);
-                    $resultPages[$pageNo] = $normalizedPage;
-                    $processed++;
+                        $normalizedPage['page_rotation'] = (int) ($pageDimension['rotation'] ?? 0);
+                        $resultPages[$pageNo] = $normalizedPage;
+                        $processed++;
+                    }
+                } finally {
+                    foreach ($renderedPages as $rendered) {
+                        @unlink($rendered['image_path']);
+                    }
                 }
             }
         } finally {
-            foreach ($renderedPages as $rendered) {
-                @unlink($rendered['image_path']);
+            if ($pendingRender !== null) {
+                foreach ($this->finishRenderChunk($pendingRender, $warnings) as $rendered) {
+                    @unlink($rendered['image_path']);
+                }
             }
         }
 
@@ -222,47 +245,97 @@ class PaddleOcrJobCoordinator
     }
 
     /**
-     * @return array{image_path: string, image_width: int, image_height: int}
+     * Kick off parallel pdftoppm renders for a chunk of pages without waiting.
+     *
+     * @param  list<int>  $pageNumbers
+     * @return array{pool: InvokedProcessPool, targets: array<int, string>}
      */
-    private function renderPageToImage(string $inputPath, int $pageNo): array
+    private function startRenderChunk(string $inputPath, array $pageNumbers): array
     {
-        $temporaryBase = tempnam(sys_get_temp_dir(), 'tenthline-paddle-');
-        if ($temporaryBase === false) {
-            throw new RuntimeException('Unable to create a temporary image path for PaddleOCR.');
-        }
-
-        @unlink($temporaryBase);
-
-        $imageBase = $temporaryBase . '-page';
-        $imagePath = $imageBase . '.png';
+        $binary = (string) config('line_numbering.pdftoppm_binary', 'pdftoppm');
         $renderDpi = max(180, min(600, (int) config('paddleocr.render_dpi', 300)));
-        $command = sprintf(
-            '%s -f %d -l %d -singlefile -gray -r %d -png %s %s 2>/dev/null',
-            escapeshellcmd((string) config('line_numbering.pdftoppm_binary', 'pdftoppm')),
-            $pageNo,
-            $pageNo,
-            $renderDpi,
-            escapeshellarg($inputPath),
-            escapeshellarg($imageBase)
-        );
+        $targets = [];
 
-        shell_exec($command);
+        foreach ($pageNumbers as $pageNo) {
+            $temporaryBase = tempnam(sys_get_temp_dir(), 'tenthline-paddle-');
+            if ($temporaryBase === false) {
+                throw new RuntimeException('Unable to create a temporary image path for PaddleOCR.');
+            }
 
-        if (! is_file($imagePath)) {
-            throw new RuntimeException("Unable to rasterize page {$pageNo} for PaddleOCR.");
+            @unlink($temporaryBase);
+            $targets[$pageNo] = $temporaryBase . '-page';
         }
 
-        [$imageWidth, $imageHeight] = getimagesize($imagePath) ?: [0, 0];
-        if ($imageWidth <= 0 || $imageHeight <= 0) {
-            @unlink($imagePath);
-            throw new RuntimeException("Unable to determine image size for rasterized page {$pageNo}.");
+        $pool = Process::pool(function (ProcessPool $pool) use ($binary, $renderDpi, $inputPath, $pageNumbers, $targets): void {
+            foreach ($pageNumbers as $pageNo) {
+                $pool->command([
+                    $binary,
+                    '-f', (string) $pageNo,
+                    '-l', (string) $pageNo,
+                    '-singlefile',
+                    '-gray',
+                    '-r', (string) $renderDpi,
+                    '-png',
+                    $inputPath,
+                    $targets[$pageNo],
+                ]);
+            }
+        })->start();
+
+        return ['pool' => $pool, 'targets' => $targets];
+    }
+
+    /**
+     * Wait for a render chunk and collect the usable page images. Pages that
+     * fail to rasterize are skipped with a warning instead of failing the
+     * whole document; the numbering service falls back to a fixed grid for
+     * any page without OCR line anchors.
+     *
+     * @param  array{pool: InvokedProcessPool, targets: array<int, string>}|null  $pendingRender
+     * @param  list<string>  $warnings
+     * @return array<int, array{image_path: string, image_width: int, image_height: int}>
+     */
+    private function finishRenderChunk(?array $pendingRender, array &$warnings): array
+    {
+        if ($pendingRender === null) {
+            return [];
         }
 
-        return [
-            'image_path' => $imagePath,
-            'image_width' => (int) $imageWidth,
-            'image_height' => (int) $imageHeight,
-        ];
+        $pendingRender['pool']->wait();
+
+        $renderedPages = [];
+
+        foreach ($pendingRender['targets'] as $pageNo => $imageBase) {
+            $imagePath = $imageBase . '.png';
+
+            if (! is_file($imagePath)) {
+                $warnings[] = "Unable to rasterize page {$pageNo} for PaddleOCR.";
+                Log::warning('[TenthLine] PaddleOcrJobCoordinator: page rasterization failed', [
+                    'page' => $pageNo,
+                ]);
+
+                continue;
+            }
+
+            [$imageWidth, $imageHeight] = getimagesize($imagePath) ?: [0, 0];
+            if ($imageWidth <= 0 || $imageHeight <= 0) {
+                @unlink($imagePath);
+                $warnings[] = "Unable to determine image size for rasterized page {$pageNo}.";
+                Log::warning('[TenthLine] PaddleOcrJobCoordinator: rasterized page has no readable size', [
+                    'page' => $pageNo,
+                ]);
+
+                continue;
+            }
+
+            $renderedPages[$pageNo] = [
+                'image_path' => $imagePath,
+                'image_width' => (int) $imageWidth,
+                'image_height' => (int) $imageHeight,
+            ];
+        }
+
+        return $renderedPages;
     }
 
     /**

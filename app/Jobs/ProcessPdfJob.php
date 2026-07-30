@@ -2,10 +2,14 @@
 
 namespace App\Jobs;
 
+use App\Enums\JobErrorCode;
 use App\Events\PdfJobUpdated;
 use App\Models\PdfJob;
 use App\Notifications\PdfJob\PdfJobCompletedNotification;
 use App\Services\PdfLineNumberService;
+use App\Services\Quality\PageQualityEvaluator;
+use App\Services\Quality\ProcessingReportGenerator;
+use App\Settings\RetentionSettings;
 use App\Support\PdfJobPayloadFactory;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -36,14 +40,29 @@ class ProcessPdfJob implements ShouldQueue
 
     public int $tries = 2;
 
-    public int $timeout = 3600;
+    // Large scanned documents OCR at roughly 5-6 seconds per page on the
+    // production host, so a 500+ page record of appeal legitimately needs a
+    // few hours. Keep this below the queue connection's retry_after value
+    // (REDIS_QUEUE_RETRY_AFTER) or the job will be handed to a second worker
+    // and processed twice in parallel.
+    public int $timeout = 14400;
+
+    // Retrying after a timeout would re-run the whole multi-hour pipeline
+    // from scratch; surface the failure to the user instead.
+    public bool $failOnTimeout = true;
+
+    protected float $lastPageProgressPublishedAt = 0.0;
 
     public function __construct(
         public string $pdfJobId
     ) {}
 
-    public function handle(PdfLineNumberService $pdfService): void
-    {
+    public function handle(
+        PdfLineNumberService $pdfService,
+        PageQualityEvaluator $qualityEvaluator,
+        ProcessingReportGenerator $reportGenerator,
+        RetentionSettings $retentionSettings,
+    ): void {
         Log::info('[TenthLine] ProcessPdfJob handle() entered', ['job_id' => $this->pdfJobId]);
 
         $inputPath = Storage::disk('local')->path("pdf-jobs/{$this->pdfJobId}/input.pdf");
@@ -139,6 +158,15 @@ class ProcessPdfJob implements ShouldQueue
                         'detail' => "Page {$pageNo} of {$total}",
                     ];
 
+                    // Persisting/broadcasting every page floods the database,
+                    // the log, and the websocket on large documents; a 2-second
+                    // cadence is indistinguishable in the UI.
+                    $now = microtime(true);
+                    if ($pageNo !== 1 && $pageNo !== $total && ($now - $this->lastPageProgressPublishedAt) < 2.0) {
+                        return;
+                    }
+                    $this->lastPageProgressPublishedAt = $now;
+
                     $update = [
                         'total_pages' => $total,
                         'processed_pages' => $pageNo,
@@ -171,34 +199,85 @@ class ProcessPdfJob implements ShouldQueue
 
             $runDiagnostics = $pdfService->getLastRunDiagnostics();
             $ocrAttributes = $this->buildOcrPersistenceAttributes($runDiagnostics);
-
             $relativeOutput = "pdf-jobs/{$this->pdfJobId}/output.pdf";
-            $completionUpdate = [
-                'status' => 'completed',
+
+            // ── Quality evaluation & processing report ──────────────────────
+            $this->publishProcessingState(
+                'evaluating_quality',
+                'Evaluating quality',
+                'We are assessing processing quality for each page.',
+                97,
+            );
+
+            $runPages = is_array($runDiagnostics['pages'] ?? null) ? $runDiagnostics['pages'] : [];
+            $pageResults = $qualityEvaluator->evaluateAll($runPages);
+
+            $job->refresh();
+            $report = $reportGenerator->generate($job, $pageResults);
+
+            // ── Zero payable pages: fail the job, discard output ────────────
+            if ($report->hasZeroPayablePages()) {
+                Log::warning('[TenthLine] ProcessPdfJob: zero payable pages after quality evaluation', [
+                    'job_id' => $this->pdfJobId,
+                    'uploaded_pages' => $report->uploaded_pages,
+                    'successful_pages' => $report->successful_pages,
+                    'low_confidence_pages' => $report->low_confidence_pages,
+                    'failed_pages' => $report->failed_pages,
+                ]);
+
+                @unlink($outputPath);
+
+                $failUpdate = [
+                    'status' => 'failed',
+                    'error_code' => JobErrorCode::ZeroSuccessfulPages->value,
+                    'error_message' => JobErrorCode::ZeroSuccessfulPages->userMessage(),
+                    'processing_report_id' => $report->id,
+                    'total_pages' => $totalPages,
+                    'updated_at' => now(),
+                ];
+                if ($ocrAttributes !== []) {
+                    $failUpdate = array_merge($failUpdate, $ocrAttributes);
+                }
+                DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($failUpdate);
+                $this->broadcastJobSnapshot();
+                return;
+            }
+
+            // ── Transition to awaiting_payment ──────────────────────────────
+            $paymentDeadlineAt = now()->addHours(
+                max(1, $retentionSettings->payment_deadline_hours)
+            );
+
+            $awaitingUpdate = [
+                'status' => 'awaiting_payment',
                 'total_pages' => $totalPages,
                 'processed_pages' => $totalPages,
                 'progress' => 100,
                 'eta_seconds' => 0,
                 'output_path' => $relativeOutput,
+                'processing_report_id' => $report->id,
+                'payable_pages' => $report->payable_pages,
+                'payment_deadline_at' => $paymentDeadlineAt,
                 'updated_at' => now(),
             ];
 
             if ($ocrAttributes !== []) {
-                $completionUpdate = array_merge($completionUpdate, $ocrAttributes);
+                $awaitingUpdate = array_merge($awaitingUpdate, $ocrAttributes);
             }
 
-            DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($completionUpdate);
+            DB::table('pdf_jobs')->where('id', $this->pdfJobId)->update($awaitingUpdate);
 
             $duration = round(microtime(true) - $startTime, 2);
-            Log::info('[TenthLine] ProcessPdfJob: Job completed successfully', [
+            Log::info('[TenthLine] ProcessPdfJob: Job awaiting payment', [
                 'job_id' => $this->pdfJobId,
                 'total_pages' => $totalPages,
+                'payable_pages' => $report->payable_pages,
+                'total_amount' => $report->total_amount,
+                'payment_deadline_at' => $paymentDeadlineAt->toIso8601String(),
                 'duration_seconds' => $duration,
                 'output_path' => $relativeOutput,
-                'ocr_summary' => $runDiagnostics['extractor_summary']['ocr'] ?? null,
             ]);
 
-            $this->notifyUserJobCompleted($job->fresh() ?? $job);
             $this->broadcastJobSnapshot();
         } catch (\Throwable $e) {
             Log::error('[TenthLine] ProcessPdfJob: Job failed with exception', [
@@ -212,12 +291,18 @@ class ProcessPdfJob implements ShouldQueue
         }
     }
 
-    protected function failJob(string $message): void
+    protected function failJob(string $message, ?JobErrorCode $errorCode = null): void
     {
-        Log::warning('[TenthLine] ProcessPdfJob: Marking job as failed', ['job_id' => $this->pdfJobId, 'error_message' => $message]);
+        Log::warning('[TenthLine] ProcessPdfJob: Marking job as failed', [
+            'job_id' => $this->pdfJobId,
+            'error_message' => $message,
+            'error_code' => $errorCode?->value,
+        ]);
+
         $update = [
             'status' => 'failed',
             'error_message' => $message,
+            'error_code' => $errorCode?->value,
             'updated_at' => now(),
         ];
 

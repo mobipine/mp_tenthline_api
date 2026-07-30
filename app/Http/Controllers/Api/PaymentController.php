@@ -4,11 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
+use App\Models\PdfJob;
 use App\Models\User;
 use App\Notifications\Auth\WelcomeCustomerNotification;
 use App\Settings\AppSettings;
-use App\Services\PdfFpdiCompatibilityService;
 use App\Services\MpesaService;
+use App\Services\PdfFpdiCompatibilityService;
 use App\Services\PdfPageCounter;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -26,6 +27,10 @@ class PaymentController extends Controller
         protected PdfFpdiCompatibilityService $fpdiCompatibility
     ) {}
 
+    /**
+     * Pre-upload price estimate. Amount may differ from actual processing report
+     * because OCR quality evaluation may exclude some pages.
+     */
     public function quote(Request $request): JsonResponse
     {
         $request->validate([
@@ -74,39 +79,74 @@ class PaymentController extends Controller
             'unit_price' => $unitPrice,
             'amount' => $amount,
             'currency' => $this->settings->currency,
+            'is_estimate' => true,
         ]);
     }
 
+    /**
+     * Initiate M-Pesa payment for a processed job that is awaiting_payment.
+     * The exact amount comes from the processing report, not the uploaded page count.
+     */
     public function initiate(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'job_id' => ['required', 'string'],
             'phone' => ['required', 'string', 'regex:/^(?:254[0-9]{9}|0[0-9]{9})$/'],
             'email' => ['required', 'string', 'email'],
-            'page_count' => ['required', 'integer', 'min:1', 'max:' . $this->settings->max_pages],
         ]);
 
         $phone = $this->normalizePhone($validated['phone']);
         $email = strtolower($validated['email']);
-        $pageCount = (int) $validated['page_count'];
+
+        $job = PdfJob::findOrFail($validated['job_id']);
+
+        if ($job->status !== 'awaiting_payment') {
+            Log::warning('[TenthLine] payment.initiate.job_not_awaiting_payment', [
+                'job_id' => $job->id,
+                'status' => $job->status,
+            ]);
+            return response()->json([
+                'message' => 'This job is not awaiting payment.',
+                'code' => 'job_not_awaiting_payment',
+            ], 422);
+        }
+
+        if ($job->payment_deadline_at && $job->payment_deadline_at->isPast()) {
+            return response()->json([
+                'message' => 'The payment deadline for this job has passed.',
+                'code' => 'payment_deadline_expired',
+            ], 422);
+        }
+
+        $report = $job->processingReport;
+        if (! $report) {
+            Log::error('[TenthLine] payment.initiate.missing_report', ['job_id' => $job->id]);
+            return response()->json(['message' => 'Processing report not found.'], 500);
+        }
+
         [$user, $issuedToken, $createdByPayment] = $this->resolveUserForPayment($request, $email, $phone);
-        $defaultPricePerPage = max(0.0, (float) $this->settings->price_per_page);
-        $unitPrice = $user->getEffectivePricePerPage($defaultPricePerPage);
-        $amount = round($unitPrice * $pageCount, 2);
+
+        if ($job->user_id && (int) $job->user_id !== (int) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $amount = (float) $report->total_amount;
+        $pageCount = (int) $report->payable_pages;
+        $unitPrice = (float) $report->unit_price;
         $reference = Payment::generateReference();
         $paymentsEnabled = (bool) $this->settings->enable_payment;
         $zeroAmountCharge = $amount <= 0.0;
 
         Log::info('[TenthLine] payment.initiate.received', [
+            'job_id' => $job->id,
             'phone' => $phone,
             'email' => $email,
             'user_id' => $user->id,
-            'created_by_payment' => $createdByPayment,
-            'page_count' => $pageCount,
+            'payable_pages' => $pageCount,
             'unit_price' => $unitPrice,
             'amount' => $amount,
             'currency' => $this->settings->currency,
             'enable_payment' => $paymentsEnabled,
-            'simulation_mode' => ! $paymentsEnabled,
         ]);
 
         $payment = Payment::create([
@@ -118,12 +158,7 @@ class PaymentController extends Controller
             'phone' => $phone,
             'reference' => $reference,
             'status' => 'pending',
-        ]);
-
-        Log::info('[TenthLine] payment.initiate.created', [
-            'payment_id' => $payment->id,
-            'reference' => $reference,
-            'user_id' => $user->id,
+            'pdf_job_id' => $job->id,
         ]);
 
         if ($zeroAmountCharge) {
@@ -136,21 +171,18 @@ class PaymentController extends Controller
                     'completed_at' => now()->toIso8601String(),
                 ],
             ]);
-            $payment->refresh();
+
+            $job->forceFill([
+                'status' => 'completed',
+                'payment_id' => $payment->id,
+            ])->save();
 
             Log::info('[TenthLine] payment.initiate.zero_amount_auto_completed', [
                 'payment_id' => $payment->id,
-                'reference' => $reference,
-                'user_id' => $user->id,
+                'job_id' => $job->id,
             ]);
         } elseif ($paymentsEnabled) {
             $result = $this->mpesa->stkPush($phone, $amount, $reference, $payment->id);
-            Log::info('[TenthLine] payment.initiate.stk_response', [
-                'payment_id' => $payment->id,
-                'reference' => $reference,
-                'has_checkout_request_id' => isset($result['CheckoutRequestID']),
-            ]);
-
             if (isset($result['CheckoutRequestID'])) {
                 $payment->update([
                     'mpesa_merchant_request_id' => $result['MerchantRequestID'] ?? null,
@@ -158,20 +190,22 @@ class PaymentController extends Controller
                 ]);
             }
         } else {
-            Log::info('[TenthLine] payment.initiate.simulation_skip_stk_enable_payment_disabled', [
+            Log::info('[TenthLine] payment.initiate.simulation_skip_stk', [
                 'payment_id' => $payment->id,
-                'reference' => $reference,
+                'job_id' => $job->id,
             ]);
         }
 
         return response()->json([
             'payment_id' => $payment->id,
             'reference' => $reference,
-            'message' => $zeroAmountCharge ? 'No payment required. Proceeding to upload.' : 'Complete payment on your phone.',
+            'message' => $zeroAmountCharge
+                ? 'No payment required. Your document is ready.'
+                : 'Complete payment on your phone.',
             'created_account' => $createdByPayment,
             'auth_token' => $issuedToken,
             'user' => $this->serializeUser($user),
-            'page_count' => $pageCount,
+            'payable_pages' => $pageCount,
             'unit_price' => $unitPrice,
             'amount' => $amount,
             'currency' => $this->settings->currency,
@@ -188,12 +222,6 @@ class PaymentController extends Controller
         $requestUser = auth('sanctum')->user();
 
         if ($requestUser && $payment->user_id && (int) $requestUser->id !== (int) $payment->user_id) {
-            Log::warning('[TenthLine] payment.status.forbidden', [
-                'reference' => $reference,
-                'payment_user_id' => $payment->user_id,
-                'request_user_id' => $requestUser->id,
-            ]);
-
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -208,12 +236,6 @@ class PaymentController extends Controller
                 ],
             ]);
             $payment->refresh();
-
-            Log::info('[TenthLine] payment.status.zero_amount_auto_completed', [
-                'payment_id' => $payment->id,
-                'reference' => $payment->reference,
-                'user_id' => $payment->user_id,
-            ]);
         } elseif (
             ! $paymentsEnabled
             && $payment->status === 'pending'
@@ -231,21 +253,14 @@ class PaymentController extends Controller
             ]);
             $payment->refresh();
 
-            Log::info('[TenthLine] payment.status.simulated_completed', [
-                'payment_id' => $payment->id,
-                'reference' => $payment->reference,
-                'user_id' => $payment->user_id,
-            ]);
+            // Transition the linked job to completed when payment simulation succeeds
+            if ($payment->pdf_job_id) {
+                $linkedJob = PdfJob::find($payment->pdf_job_id);
+                if ($linkedJob && $linkedJob->status === 'awaiting_payment') {
+                    $linkedJob->forceFill(['status' => 'completed'])->save();
+                }
+            }
         }
-
-        // Log::info('[TenthLine] payment.status.response', [
-        //     'payment_id' => $payment->id,
-        //     'reference' => $payment->reference,
-        //     'status' => $payment->status,
-        //     'enable_payment' => $paymentsEnabled,
-        //     'simulation_mode' => ! $paymentsEnabled,
-        //     'elapsed_seconds' => $elapsedSeconds,
-        // ]);
 
         return response()->json([
             'status' => $payment->status,
@@ -265,12 +280,6 @@ class PaymentController extends Controller
         if ($requestUser) {
             if ($requestUser->phone !== $phone) {
                 $requestUser->forceFill(['phone' => $phone])->save();
-
-                Log::info('[TenthLine] payment.initiate.auth_user_phone_updated', [
-                    'user_id' => $requestUser->id,
-                    'email' => $requestUser->email,
-                    'phone' => $phone,
-                ]);
             }
 
             $this->ensureCustomerRole($requestUser);
@@ -279,18 +288,12 @@ class PaymentController extends Controller
 
         $existingUser = User::where('email', $email)->first();
         if ($existingUser) {
-            Log::info('[TenthLine] payment.initiate.existing_user_requires_sign_in', [
-                'email' => $email,
-                'user_id' => $existingUser->id,
-            ]);
-
             throw new HttpResponseException(response()->json([
                 'message' => 'This email already has an account. Please sign in with OTP to continue.',
                 'code' => 'existing_user_sign_in_required',
             ], 409));
         }
 
-        $createdByPayment = true;
         $user = User::create([
             'name' => $this->nameFromEmail($email),
             'email' => $email,
@@ -309,10 +312,9 @@ class PaymentController extends Controller
         }
 
         $this->ensureCustomerRole($user);
-
         $token = $user->createToken('frontend-session')->plainTextToken;
 
-        return [$user, $token, $createdByPayment];
+        return [$user, $token, true];
     }
 
     protected function nameFromEmail(string $email): string
@@ -345,7 +347,6 @@ class PaymentController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[TenthLine] payment.user_creation.customer_role_assignment_failed', [
                 'user_id' => $user->id,
-                'email' => $user->email,
                 'message' => $e->getMessage(),
             ]);
         }

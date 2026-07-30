@@ -19,6 +19,11 @@ return [
     // How many pages to OCR concurrently. Match this to the sidecar's worker
     // count (uvicorn --workers N); extra concurrency beyond that just queues.
     'concurrency'      => (int)   env('PADDLEOCR_CONCURRENCY', 2),
+    // How many pdftoppm renders to run in parallel while the previous chunk
+    // is being OCR'd. Rendering scales with cores (unlike the OCR inference,
+    // which already saturates them), so 3-4 keeps rasterization entirely off
+    // the critical path.
+    'render_parallelism' => (int) env('PADDLEOCR_RENDER_PARALLELISM', 3),
 
     /*
     |--------------------------------------------------------------------------

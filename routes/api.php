@@ -1,15 +1,22 @@
 <?php
 
-use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\JobController;
+use App\Http\Controllers\Api\LegalController;
 use App\Http\Controllers\Api\MpesaWebhookController;
 use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\SupportTicketController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserJobController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('config', [ConfigController::class, 'show']);
+
+Route::get('legal/terms', [LegalController::class, 'terms']);
+Route::get('legal/privacy', [LegalController::class, 'privacy']);
+
+Route::post('support/tickets', [SupportTicketController::class, 'store'])->middleware('throttle:10,1');
 
 Route::prefix('auth')->group(function () {
     Route::post('register', [AuthController::class, 'register']);
@@ -39,6 +46,7 @@ Route::get('job/{id}/download/signed', [JobController::class, 'downloadSigned'])
 Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
     Route::post('upload', [UploadController::class, 'store']);
     Route::get('job/{id}', [JobController::class, 'show']);
+    Route::get('job/{id}/report', [JobController::class, 'report']);
     Route::get('job/{id}/download', [JobController::class, 'download']);
     Route::get('me/jobs', [UserJobController::class, 'index']);
 });

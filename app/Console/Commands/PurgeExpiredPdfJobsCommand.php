@@ -3,25 +3,26 @@
 namespace App\Console\Commands;
 
 use App\Models\PdfJob;
+use App\Settings\RetentionSettings;
 use Illuminate\Console\Command;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class PurgeExpiredPdfJobsCommand extends Command
 {
-    protected $signature = 'pdf-jobs:purge-expired {--hours=24 : Retention window in hours}';
+    protected $signature = 'pdf-jobs:purge-expired';
 
-    protected $description = 'Delete stored input/output PDF files after retention period and mark jobs as deleted';
+    protected $description = 'Delete stored input/output PDF files after the configured retention period';
 
-    public function handle(): int
+    public function handle(RetentionSettings $retentionSettings): int
     {
-        $hours = max(1, (int) $this->option('hours'));
-        $cutoff = Carbon::now()->subHours($hours);
+        $hours = max(1, $retentionSettings->retentionInHours());
+        $cutoff = now()->subHours($hours);
 
         $jobs = PdfJob::query()
             ->where('created_at', '<=', $cutoff)
             ->whereIn('status', ['completed', 'failed'])
+            ->whereNull('storage_deleted_at')
             ->get();
 
         $deletedCount = 0;
@@ -41,7 +42,7 @@ class PurgeExpiredPdfJobsCommand extends Command
         }
 
         Log::info('[TenthLine] pdf-jobs.purge-expired.completed', [
-            'hours' => $hours,
+            'retention_hours' => $hours,
             'cutoff' => $cutoff->toIso8601String(),
             'deleted_jobs' => $deletedCount,
         ]);
