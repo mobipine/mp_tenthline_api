@@ -32,11 +32,11 @@ class PaddleOcrJobCoordinator
     public function run(string $pdfJobId, string $inputPath, array $pageDimensions = [], array $candidatePages = [], array $options = []): array
     {
         if (! $this->enabled()) {
-            throw new RuntimeException('PaddleOCR is disabled.');
+            throw new RuntimeException('OCR is disabled.');
         }
 
         if (! is_file($inputPath)) {
-            throw new RuntimeException('PaddleOCR input PDF not found.');
+            throw new RuntimeException('OCR input PDF not found.');
         }
 
         $startedAt = now();
@@ -64,7 +64,7 @@ class PaddleOcrJobCoordinator
             'phase' => 'ocr_rendering_pages',
             'label' => 'Preparing scanned pages',
             'message' => 'We are preparing the scanned pages for OCR.',
-            'detail' => "Preparing {$totalCandidates} page(s) for PaddleOCR.",
+            'detail' => "Preparing {$totalCandidates} page(s) for OCR.",
             'progress' => 14,
             'ocr_provider' => 'paddleocr',
             'ocr_status' => 'rendering_pages',
@@ -97,10 +97,22 @@ class PaddleOcrJobCoordinator
 
         try {
             foreach ($chunks as $index => $chunk) {
-                $renderedPages = $this->finishRenderChunk($pendingRender, $warnings);
+                $renderWarnings = [];
+                $renderedPages = $this->finishRenderChunk($pendingRender, $renderWarnings);
                 $pendingRender = isset($chunks[$index + 1])
                     ? $this->startRenderChunk($inputPath, $chunks[$index + 1])
                     : null;
+
+                // Retry pages that failed to rasterize once before giving up on them.
+                $missingRender = array_values(array_diff($chunk, array_keys($renderedPages)));
+                if ($missingRender !== []) {
+                    $renderWarnings = [];
+                    $retryRender = $this->startRenderChunk($inputPath, $missingRender);
+                    $renderedPages += $this->finishRenderChunk($retryRender, $renderWarnings);
+                }
+                foreach ($renderWarnings as $renderWarning) {
+                    $warnings[] = $renderWarning;
+                }
 
                 $pagesToOcr = array_values(array_intersect($chunk, array_keys($renderedPages)));
                 if ($pagesToOcr === []) {
@@ -112,7 +124,7 @@ class PaddleOcrJobCoordinator
                     $this->reportProgress($options, [
                         'phase' => 'ocr_processing_pages',
                         'label' => 'Reading scanned pages',
-                        'message' => 'We are reading the scanned pages with PaddleOCR.',
+                        'message' => 'Our AI OCR engine is reading the scanned pages.',
                         'detail' => "Processing page(s) {$chunkLabel} ({$processed} of {$totalPages} done).",
                         'progress' => min(46, 18 + (int) floor(($processed / max(1, $totalPages)) * 28)),
                         'ocr_provider' => 'paddleocr',
@@ -121,10 +133,11 @@ class PaddleOcrJobCoordinator
                         'ocr_started_at' => $startedAt->toISOString(),
                     ]);
 
-                    $responses = $this->requestOcrPool($pagesToOcr, $renderedPages);
-
-                    foreach ($pagesToOcr as $pageNo) {
-                        $ocrData = $this->parseOcrResponse($responses["page-{$pageNo}"] ?? null, $pageNo);
+                    // A failed page must never abort the run: on a large document a
+                    // single transient timeout would otherwise discard every page's
+                    // OCR results. Failed pages get one retry round; pages that still
+                    // fail are warned about and skipped individually.
+                    $ingestPage = function (int $pageNo, array $ocrData) use ($pageDimensions, $renderedPages, $options, &$resultPages, &$processed): void {
                         $pageDimension = $pageDimensions[$pageNo];
                         $rendered = $renderedPages[$pageNo];
 
@@ -143,6 +156,37 @@ class PaddleOcrJobCoordinator
                         $normalizedPage['page_rotation'] = (int) ($pageDimension['rotation'] ?? 0);
                         $resultPages[$pageNo] = $normalizedPage;
                         $processed++;
+                    };
+
+                    $responses = $this->requestOcrPool($pagesToOcr, $renderedPages);
+                    $failedPages = [];
+
+                    foreach ($pagesToOcr as $pageNo) {
+                        try {
+                            $ingestPage($pageNo, $this->parseOcrResponse($responses["page-{$pageNo}"] ?? null, $pageNo));
+                        } catch (\Throwable $e) {
+                            $failedPages[] = $pageNo;
+                            Log::warning('[TenthLine] PaddleOcrJobCoordinator: page OCR failed, will retry once', [
+                                'page' => $pageNo,
+                                'message' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
+                    if ($failedPages !== []) {
+                        $retryResponses = $this->requestOcrPool($failedPages, $renderedPages);
+
+                        foreach ($failedPages as $pageNo) {
+                            try {
+                                $ingestPage($pageNo, $this->parseOcrResponse($retryResponses["page-{$pageNo}"] ?? null, $pageNo));
+                            } catch (\Throwable $e) {
+                                $warnings[] = "OCR failed for page {$pageNo} after retry: {$e->getMessage()}";
+                                Log::error('[TenthLine] PaddleOcrJobCoordinator: page OCR failed after retry, skipping page', [
+                                    'page' => $pageNo,
+                                    'message' => $e->getMessage(),
+                                ]);
+                            }
+                        }
                     }
                 } finally {
                     foreach ($renderedPages as $rendered) {
@@ -180,7 +224,7 @@ class PaddleOcrJobCoordinator
             'phase' => 'ocr_ready_for_numbering',
             'label' => 'Starting line numbering',
             'message' => 'The scanned page text is ready, and line numbering is about to begin.',
-            'detail' => 'PaddleOCR processing completed.',
+            'detail' => 'OCR processing completed.',
             'progress' => 58,
             'ocr_provider' => 'paddleocr',
             'ocr_status' => 'completed',
@@ -259,7 +303,7 @@ class PaddleOcrJobCoordinator
         foreach ($pageNumbers as $pageNo) {
             $temporaryBase = tempnam(sys_get_temp_dir(), 'tenthline-paddle-');
             if ($temporaryBase === false) {
-                throw new RuntimeException('Unable to create a temporary image path for PaddleOCR.');
+                throw new RuntimeException('Unable to create a temporary image path for OCR.');
             }
 
             @unlink($temporaryBase);
@@ -309,7 +353,7 @@ class PaddleOcrJobCoordinator
             $imagePath = $imageBase . '.png';
 
             if (! is_file($imagePath)) {
-                $warnings[] = "Unable to rasterize page {$pageNo} for PaddleOCR.";
+                $warnings[] = "Unable to rasterize page {$pageNo} for OCR.";
                 Log::warning('[TenthLine] PaddleOcrJobCoordinator: page rasterization failed', [
                     'page' => $pageNo,
                 ]);
@@ -392,24 +436,24 @@ class PaddleOcrJobCoordinator
     private function parseOcrResponse(mixed $response, int $pageNo): array
     {
         if ($response instanceof \Throwable) {
-            throw new RuntimeException("PaddleOCR request for page {$pageNo} failed: " . $response->getMessage(), 0, $response);
+            throw new RuntimeException("OCR request for page {$pageNo} failed: " . $response->getMessage(), 0, $response);
         }
 
         if (! $response instanceof Response) {
-            throw new RuntimeException("PaddleOCR request for page {$pageNo} produced no response.");
+            throw new RuntimeException("OCR request for page {$pageNo} produced no response.");
         }
 
         if (! $response->successful()) {
-            throw new RuntimeException("PaddleOCR request for page {$pageNo} failed with HTTP status " . $response->status() . '.');
+            throw new RuntimeException("OCR request for page {$pageNo} failed with HTTP status " . $response->status() . '.');
         }
 
         $payload = $response->json();
         if (! is_array($payload)) {
-            throw new RuntimeException("PaddleOCR response for page {$pageNo} was not valid JSON.");
+            throw new RuntimeException("OCR response for page {$pageNo} was not valid JSON.");
         }
 
         if (($payload['success'] ?? true) !== true) {
-            throw new RuntimeException((string) ($payload['error'] ?? "PaddleOCR OCR request for page {$pageNo} failed."));
+            throw new RuntimeException((string) ($payload['error'] ?? "OCR request for page {$pageNo} failed."));
         }
 
         return $payload;

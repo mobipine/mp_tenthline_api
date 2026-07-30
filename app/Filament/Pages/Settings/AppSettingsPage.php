@@ -38,8 +38,8 @@ class AppSettingsPage extends Page implements HasForms
                 Forms\Components\Section::make('Payment')
                     ->schema([
                         Forms\Components\Toggle::make('enable_payment')
-                            ->label('Require payment before upload')
-                            ->helperText('When on, users must pay via M-Pesa before they can upload a PDF.'),
+                            ->label('Require payment before download')
+                            ->helperText('When on, users must pay via M-Pesa after processing before they can download the tenthlined PDF. When off, payment is simulated.'),
                         Forms\Components\TextInput::make('price_per_page')
                             ->label('Price per page')
                             ->numeric()
@@ -77,6 +77,9 @@ class AppSettingsPage extends Page implements HasForms
         $settings->max_file_size_mb = (int) $data['max_file_size_mb'];
         $settings->max_pages = (int) $data['max_pages'];
         $settings->save();
-        $this->dispatch('saved');
+        \Filament\Notifications\Notification::make()
+            ->title('Settings saved')
+            ->success()
+            ->send();
     }
 }

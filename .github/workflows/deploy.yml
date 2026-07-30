@@ -47,6 +47,10 @@ jobs:
 
             cd /var/www/tenthline-api
 
+            # Perm-only diffs (chmod noise from prior runs) must never block a
+            # fast-forward pull.
+            git config core.fileMode false
+
             git fetch --all --prune
             git pull --ff-only origin main
 
@@ -60,12 +64,92 @@ jobs:
 
             npm run build
 
+            # --- PaddleOCR sidecar (scanned-PDF OCR) ---
+            # System packages the sidecar and PDF rendering pipeline need.
+            # apt-get is idempotent: this is a fast no-op once installed.
+            if command -v apt-get >/dev/null 2>&1; then
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq poppler-utils python3-venv python3-pip qpdf
+            fi
+
+            if [ -d paddle-ocr-service ]; then
+              cd paddle-ocr-service
+
+              [ -d .venv ] || python3 -m venv .venv
+              .venv/bin/pip install --upgrade pip -q
+
+              # Reinstall only when requirements.txt actually changed —
+              # paddlepaddle/paddleocr are large downloads and this step
+              # would otherwise add minutes to every deploy.
+              REQ_HASH="$(sha256sum requirements.txt | awk '{print $1}')"
+              STAMP=".venv/.requirements.sha256"
+              if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$REQ_HASH" ]; then
+                .venv/bin/pip install -r requirements.txt -q
+                echo "$REQ_HASH" > "$STAMP"
+              fi
+
+              cd ..
+
+              # Ensure www-data can execute the venv regardless of who owns it.
+              chmod -R a+rX paddle-ocr-service/.venv
+
+              # Seed required env keys if they're missing (fresh server /
+              # disaster recovery) without ever overwriting values already
+              # tuned in production.
+              ENV_FILE=.env
+              append_if_missing() {
+                grep -q "^${1}=" "$ENV_FILE" || echo "${1}=${2}" >> "$ENV_FILE"
+              }
+              append_if_missing PADDLEOCR_ENABLED true
+              append_if_missing PADDLEOCR_URL "http://127.0.0.1:8765"
+              append_if_missing PADDLEOCR_URLS "http://127.0.0.1:8765"
+              append_if_missing PADDLEOCR_TIMEOUT_SECONDS 180
+              append_if_missing PADDLEOCR_MIN_CONFIDENCE 0.0
+              append_if_missing PADDLEOCR_RENDER_DPI 300
+              append_if_missing PADDLEOCR_BASELINE_RATIO 0.20
+              append_if_missing PADDLEOCR_CONCURRENCY 1
+              append_if_missing PADDLEOCR_ROW_CLUSTER_ENABLED true
+              append_if_missing PADDLEOCR_ROW_CLUSTER_OVERLAP_RATIO 0.35
+              append_if_missing PADDLEOCR_ROW_CLUSTER_BASELINE_FACTOR 0.5
+              append_if_missing PADDLEOCR_ROW_SPLIT_HEIGHT_FACTOR 1.7
+              append_if_missing PDF_LINE_ENABLE_OCR_GRID_RECONSTRUCTION false
+              append_if_missing PDF_LINE_OCR_KEEP_LOW_CONFIDENCE_BODY_LINES true
+
+              # Supervisor program for the sidecar (idempotent: only writes
+              # when missing or the command line changed).
+              SUPERVISOR_CONF=/etc/supervisor/conf.d/tenthline-paddleocr.conf
+              DESIRED_CONF="$(printf '%s\n' \
+                '[program:tenthline-paddleocr]' \
+                'process_name=%(program_name)s' \
+                'command=/var/www/tenthline-api/paddle-ocr-service/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8765' \
+                'directory=/var/www/tenthline-api/paddle-ocr-service' \
+                'autostart=true' \
+                'autorestart=true' \
+                'startsecs=15' \
+                'startretries=3' \
+                'stopwaitsecs=30' \
+                'user=www-data' \
+                'environment=OCR_ENGINE="rapidocr",TEXT_SCORE="0.05",HOME="/tmp"' \
+                'redirect_stderr=true' \
+                'stdout_logfile=/var/www/tenthline-api/storage/logs/paddleocr.log' \
+                'stdout_logfile_maxbytes=10MB' \
+                'stdout_logfile_backups=3')"
+
+              if [ ! -f "$SUPERVISOR_CONF" ] || [ "$(cat "$SUPERVISOR_CONF")" != "$DESIRED_CONF" ]; then
+                printf '%s\n' "$DESIRED_CONF" > "$SUPERVISOR_CONF"
+                supervisorctl reread
+                supervisorctl update
+              fi
+            fi
+
             php artisan migrate --force
 
             if php artisan list --raw | grep -q '^permissions:seed$'; then
               php artisan permissions:seed --force
             fi
 
+            php artisan config:clear
             php artisan config:cache
             php artisan route:cache
             php artisan view:cache
@@ -74,6 +158,10 @@ jobs:
               php artisan horizon:terminate || true
             else
               php artisan queue:restart || true
+            fi
+
+            if command -v supervisorctl >/dev/null 2>&1 && supervisorctl status tenthline-paddleocr >/dev/null 2>&1; then
+              supervisorctl restart tenthline-paddleocr || true
             fi
 
             echo "API deployment complete."

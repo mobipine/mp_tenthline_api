@@ -22,6 +22,7 @@ class PageProcessingResult extends Model
         'line_labels_applied',
         'is_billable',
         'notes',
+        'raw_diagnostics',
     ];
 
     protected $casts = [
@@ -33,6 +34,7 @@ class PageProcessingResult extends Model
         'page_coverage_pct' => 'float',
         'line_labels_applied' => 'integer',
         'is_billable' => 'boolean',
+        'raw_diagnostics' => 'array',
     ];
 
     public function processingReport(): BelongsTo

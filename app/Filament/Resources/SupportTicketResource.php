@@ -82,15 +82,16 @@ class SupportTicketResource extends Resource
                 Tables\Columns\TextColumn::make('subject')
                     ->limit(50)
                     ->searchable(),
-                Tables\Columns\BadgeColumn::make('status')
-                    ->colors([
-                        'warning' => SupportTicketStatus::Open->value,
-                        'info' => SupportTicketStatus::Investigating->value,
-                        'primary' => SupportTicketStatus::WaitingForCustomer->value,
-                        'success' => SupportTicketStatus::Resolved->value,
-                        'gray' => SupportTicketStatus::Closed->value,
-                    ])
-                    ->formatStateUsing(fn (string $state): string => SupportTicketStatus::from($state)->label()),
+                Tables\Columns\TextColumn::make('status')
+                    ->badge()
+                    ->color(fn (SupportTicketStatus $state): string => match ($state) {
+                        SupportTicketStatus::Open => 'warning',
+                        SupportTicketStatus::Investigating => 'info',
+                        SupportTicketStatus::WaitingForCustomer => 'primary',
+                        SupportTicketStatus::Resolved => 'success',
+                        SupportTicketStatus::Closed => 'gray',
+                    })
+                    ->formatStateUsing(fn (SupportTicketStatus $state): string => $state->label()),
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable(),

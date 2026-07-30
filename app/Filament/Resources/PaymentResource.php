@@ -45,21 +45,33 @@ class PaymentResource extends Resource
                     ->required(),
                 Forms\Components\TextInput::make('reference')
                     ->required(),
-                Forms\Components\TextInput::make('mpesa_merchant_request_id'),
-                Forms\Components\TextInput::make('mpesa_checkout_request_id'),
-                Forms\Components\TextInput::make('mpesa_result_code'),
+                Forms\Components\TextInput::make('mpesa_merchant_request_id')
+                    ->placeholder('— not set (simulation or STK not initiated) —'),
+                Forms\Components\TextInput::make('mpesa_checkout_request_id')
+                    ->placeholder('— not set (simulation or STK not initiated) —'),
+                Forms\Components\TextInput::make('mpesa_result_code')
+                    ->placeholder('—'),
                 Forms\Components\Textarea::make('mpesa_callback_payload')
+                    ->rows(10)
+                    ->formatStateUsing(fn ($state): ?string => is_array($state)
+                        ? json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+                        : $state)
+                    ->dehydrated(false)
                     ->columnSpanFull(),
                 Forms\Components\TextInput::make('status')
                     ->required(),
                 Forms\Components\Select::make('pdf_job_id')
                     ->relationship('pdfJob', 'id'),
+                Forms\Components\DateTimePicker::make('created_at')
+                    ->label('Created at')
+                    ->disabled(),
             ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
+            ->defaultSort('created_at', 'desc')
             ->columns([
                 Tables\Columns\TextColumn::make('id')
                     ->label('ID')
@@ -91,8 +103,7 @@ class PaymentResource extends Resource
                     ->searchable(),
                 Tables\Columns\TextColumn::make('created_at')
                     ->dateTime()
-                    ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('updated_at')
                     ->dateTime()
                     ->sortable()

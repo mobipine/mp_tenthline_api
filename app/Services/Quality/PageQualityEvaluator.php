@@ -68,6 +68,7 @@ class PageQualityEvaluator
                 lineLabelsApplied: 0,
                 isBillable: false,
                 notes: "Page explicitly skipped by processing engine ({$placementMode}).",
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -84,6 +85,7 @@ class PageQualityEvaluator
                 lineLabelsApplied: $labelsDrawn,
                 isBillable: false,
                 notes: 'No line anchors detected. Page may contain only images or unreadable content.',
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -100,6 +102,7 @@ class PageQualityEvaluator
                 lineLabelsApplied: $labelsDrawn,
                 isBillable: $this->settings->bill_low_confidence_pages,
                 notes: 'Low confidence: fixed-grid line numbers applied.',
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -119,7 +122,7 @@ class PageQualityEvaluator
         // if the extractor itself reported low confidence.
         return $this->classifyTextPage(
             $pageNo, $avgConfidence, $textBoxCount, $extractedChars,
-            $pageCoveragePct, $placementMode, $labelsDrawn, $pageRunData,
+            $pageCoveragePct, $placementMode, $labelsDrawn, $pageRunData, $diagnostics,
         );
     }
 
@@ -158,6 +161,7 @@ class PageQualityEvaluator
                 placementMode: $placementMode,
                 lineLabelsApplied: $labelsDrawn,
                 isBillable: true,
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -189,6 +193,7 @@ class PageQualityEvaluator
                 lineLabelsApplied: $labelsDrawn,
                 isBillable: $this->settings->bill_low_confidence_pages,
                 notes: 'Partially meets quality thresholds: ' . implode('; ', $reasons) . '.',
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -203,6 +208,7 @@ class PageQualityEvaluator
             lineLabelsApplied: $labelsDrawn,
             isBillable: false,
             notes: 'OCR returned no usable text for this page.',
+            rawDiagnostics: $diagnostics ?: null,
         );
     }
 
@@ -220,6 +226,7 @@ class PageQualityEvaluator
         string $placementMode,
         int $labelsDrawn,
         array $pageRunData,
+        array $diagnostics = [],
     ): PageQualityResult {
         $pageConfidenceLabel = (string) ($pageRunData['diagnostics']['page_confidence_label'] ?? 'high');
         $lowConfidence = (bool) ($pageRunData['low_confidence'] ?? false);
@@ -236,6 +243,7 @@ class PageQualityEvaluator
                 placementMode: $placementMode,
                 lineLabelsApplied: $labelsDrawn,
                 isBillable: true,
+                rawDiagnostics: $diagnostics ?: null,
             );
         }
 
@@ -250,6 +258,7 @@ class PageQualityEvaluator
             lineLabelsApplied: $labelsDrawn,
             isBillable: $this->settings->bill_low_confidence_pages,
             notes: 'Text extraction returned low-confidence results for this page.',
+            rawDiagnostics: $diagnostics ?: null,
         );
     }
 
