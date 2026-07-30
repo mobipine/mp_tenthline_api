@@ -77,6 +77,7 @@ class ProcessingReportGenerator
                     'line_labels_applied' => $result->lineLabelsApplied,
                     'is_billable' => $result->isBillable,
                     'notes' => $result->notes,
+                    'raw_diagnostics' => $result->rawDiagnostics !== null ? json_encode($result->rawDiagnostics) : null,
                     'created_at' => now(),
                     'updated_at' => now(),
                 ];

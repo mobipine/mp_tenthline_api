@@ -17,6 +17,7 @@ final class PageQualityResult
         public readonly int $lineLabelsApplied,
         public readonly bool $isBillable,
         public readonly ?string $notes = null,
+        public readonly ?array $rawDiagnostics = null,
     ) {}
 
     public function toArray(): array
