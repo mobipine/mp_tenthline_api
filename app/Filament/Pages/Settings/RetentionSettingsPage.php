@@ -84,6 +84,9 @@ class RetentionSettingsPage extends Page implements HasForms
         $settings->support_attachment_retention_hours = (int) $data['support_attachment_retention_hours'];
         $settings->payment_deadline_hours = (int) $data['payment_deadline_hours'];
         $settings->save();
-        $this->dispatch('saved');
+        \Filament\Notifications\Notification::make()
+            ->title('Settings saved')
+            ->success()
+            ->send();
     }
 }

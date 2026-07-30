@@ -56,7 +56,7 @@
             text-align: right;
             white-space: nowrap;
         }
-        .ocr-diag th:first-child { text-align: left; width: 100%; }
+        .ocr-diag th:nth-child(2) { text-align: left; width: 100%; }
         .ocr-diag td {
             padding: 3px 8px;
             border: 1px solid var(--ocr-border);
@@ -65,6 +65,9 @@
             white-space: nowrap;
         }
         .ocr-diag td:first-child {
+            color: var(--ocr-summary);
+        }
+        .ocr-diag td:nth-child(2) {
             font-family: monospace;
             text-align: left;
             white-space: normal;
@@ -89,6 +92,7 @@
                 <table>
                     <thead>
                         <tr>
+                            <th style="text-align:right">#</th>
                             <th>Text</th>
                             <th>Conf.</th>
                             <th>Chars</th>
@@ -106,6 +110,7 @@
                                 $chars = (int) ($line['char_count'] ?? mb_strlen((string) ($line['text'] ?? '')));
                             @endphp
                             <tr>
+                                <td>{{ $loop->iteration }}</td>
                                 <td>{{ mb_strimwidth((string) ($line['text'] ?? ''), 0, 160, '…') }}</td>
                                 <td class="{{ $confClass }}">{{ $conf }}%</td>
                                 <td>{{ $chars }}</td>

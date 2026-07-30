@@ -85,6 +85,9 @@ class OcrQualitySettingsPage extends Page implements HasForms
         $settings->min_page_coverage_pct = (float) $data['min_page_coverage_pct'];
         $settings->bill_low_confidence_pages = (bool) $data['bill_low_confidence_pages'];
         $settings->save();
-        $this->dispatch('saved');
+        \Filament\Notifications\Notification::make()
+            ->title('Settings saved')
+            ->success()
+            ->send();
     }
 }

@@ -493,6 +493,20 @@ class PdfLineExtractor
                     $trustedAnchors
                 );
 
+                // The classifier's structural heuristics (sparse layout, address
+                // blocks, short lines) can misfire on legitimate body pages. A page
+                // with good OCR confidence must always be numbered — only pages that
+                // are BOTH classified non-body AND low-confidence are skipped.
+                $minimumConfidence = (float) config('line_numbering.minimum_page_confidence', 0.58);
+                if (($scannedPageClassification['should_number'] ?? false) === false
+                    && $pageConfidence >= $minimumConfidence
+                    && $pageConfidenceLabel !== 'low'
+                ) {
+                    $scannedPageClassification['overridden_reason'] = $scannedPageClassification['reason'] ?? null;
+                    $scannedPageClassification['override'] = 'high_confidence_body_override';
+                    $scannedPageClassification['should_number'] = true;
+                }
+
                 if (($scannedPageClassification['should_number'] ?? false) === true) {
                     $ocrGrid = $this->ocrLineGridBuilder->build(
                         $page,
