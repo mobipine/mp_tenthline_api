@@ -63,6 +63,10 @@ class ProcessPdfJob implements ShouldQueue
         ProcessingReportGenerator $reportGenerator,
         RetentionSettings $retentionSettings,
     ): void {
+        // Large scanned documents accumulate hundreds of pages of OCR line data
+        // in memory; the default 512M worker limit is not enough.
+        ini_set('memory_limit', '1024M');
+
         Log::info('[TenthLine] ProcessPdfJob handle() entered', ['job_id' => $this->pdfJobId]);
 
         $inputPath = Storage::disk('local')->path("pdf-jobs/{$this->pdfJobId}/input.pdf");

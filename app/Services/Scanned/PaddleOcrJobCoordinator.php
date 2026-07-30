@@ -402,10 +402,16 @@ class PaddleOcrJobCoordinator
             foreach (array_values($pageNumbers) as $index => $pageNo) {
                 $imagePath = $renderedPages[$pageNo]['image_path'];
                 $endpoint = $urls[$index % count($urls)] . $query;
+                $stream = fopen($imagePath, 'rb');
+                if ($stream === false) {
+                    continue;
+                }
+                // Stream the image instead of buffering it into PHP memory —
+                // large scanned documents exhaust memory_limit otherwise.
                 $requests[] = $pool->as("page-{$pageNo}")
                     ->timeout($timeoutSeconds)
                     ->connectTimeout(min(10, $timeoutSeconds))
-                    ->attach('file', (string) file_get_contents($imagePath), basename($imagePath))
+                    ->attach('file', $stream, basename($imagePath))
                     ->post($endpoint);
             }
 
