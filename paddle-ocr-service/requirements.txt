@@ -6,4 +6,6 @@ opencv-contrib-python-headless==4.10.0.84
 fastapi
 uvicorn
 python-multipart
-rapidocr-onnxruntime
+# Pinned: 1.4.x regressed on rotated scanned pages (reads them upside-down
+# with fragmented boxes). 1.2.3 is the version all OCR QA was validated on.
+rapidocr-onnxruntime==1.2.3
