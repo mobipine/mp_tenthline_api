@@ -25,6 +25,11 @@ class Payment extends Model
         'mpesa_checkout_request_id',
         'mpesa_result_code',
         'mpesa_callback_payload',
+        'tumizi_payment_id',
+        'tumizi_status',
+        'tumizi_receipt_number',
+        'tumizi_transaction_id',
+        'tumizi_callback_payload',
         'status',
         'pdf_job_id',
     ];
@@ -33,6 +38,7 @@ class Payment extends Model
         'amount' => 'decimal:2',
         'page_count' => 'integer',
         'mpesa_callback_payload' => 'array',
+        'tumizi_callback_payload' => 'array',
     ];
 
     public function pdfJob(): BelongsTo

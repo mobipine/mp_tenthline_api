@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\JobController;
 use App\Http\Controllers\Api\LegalController;
 use App\Http\Controllers\Api\MpesaWebhookController;
+use App\Http\Controllers\Api\TumiziWebhookController;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\SupportTicketController;
 use App\Http\Controllers\Api\UploadController;
@@ -39,6 +40,7 @@ Route::middleware('throttle:30,1')->group(function () {
 });
 
 Route::post('webhooks/mpesa', [MpesaWebhookController::class, 'handle']);
+Route::post('tumizi/webhook', [TumiziWebhookController::class, 'handle']);
 Route::get('job/{id}/download/signed', [JobController::class, 'downloadSigned'])
     ->middleware('signed')
     ->name('jobs.download.signed');

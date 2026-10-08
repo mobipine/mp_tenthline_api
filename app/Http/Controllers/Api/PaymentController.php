@@ -8,7 +8,7 @@ use App\Models\PdfJob;
 use App\Models\User;
 use App\Notifications\Auth\WelcomeCustomerNotification;
 use App\Settings\AppSettings;
-use App\Services\MpesaService;
+use App\Services\TumiziService;
 use App\Services\PdfFpdiCompatibilityService;
 use App\Services\PdfPageCounter;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -22,7 +22,7 @@ class PaymentController extends Controller
 {
     public function __construct(
         protected AppSettings $settings,
-        protected MpesaService $mpesa,
+        protected TumiziService $tumizi,
         protected PdfPageCounter $pageCounter,
         protected PdfFpdiCompatibilityService $fpdiCompatibility
     ) {}
@@ -182,11 +182,32 @@ class PaymentController extends Controller
                 'job_id' => $job->id,
             ]);
         } elseif ($paymentsEnabled) {
-            $result = $this->mpesa->stkPush($phone, $amount, $reference, $payment->id);
-            if (isset($result['CheckoutRequestID'])) {
+            try {
+                $result = $this->tumizi->initiateCustomerPayment($payment);
+            } catch (\Throwable $exception) {
                 $payment->update([
-                    'mpesa_merchant_request_id' => $result['MerchantRequestID'] ?? null,
-                    'mpesa_checkout_request_id' => $result['CheckoutRequestID'],
+                    'status' => 'failed',
+                    'tumizi_status' => 'failed',
+                ]);
+
+                Log::error('[TenthLine] payment.initiate.tumizi_failed', [
+                    'payment_id' => $payment->id,
+                    'reference' => $reference,
+                    'message' => $exception->getMessage(),
+                ]);
+
+                return response()->json([
+                    'message' => 'We could not start the payment. Please try again.',
+                    'code' => 'tumizi_payment_initiation_failed',
+                ], 502);
+            }
+
+            if (! empty($result['customer_payment_id'])) {
+                $payment->update([
+                    'tumizi_payment_id' => $result['customer_payment_id'],
+                    'tumizi_status' => $result['status'] ?? 'initiated',
+                    'mpesa_merchant_request_id' => $result['merchant_request_id'] ?? null,
+                    'mpesa_checkout_request_id' => $result['checkout_request_id'] ?? null,
                 ]);
             }
         } else {

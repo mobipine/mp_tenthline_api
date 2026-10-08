@@ -1,6 +1,13 @@
 <?php
 
 return [
+    'tumizi' => [
+        'base_url' => env('TUMIZI_BASE_URL', 'https://api.sandbox.tumizi.africa/api/partner/v1'),
+        'api_key' => env('TUMIZI_API_KEY'),
+        'webhook_secret' => env('TUMIZI_WEBHOOK_SECRET'),
+        'webhook_tolerance' => env('TUMIZI_WEBHOOK_TOLERANCE', 300),
+        'timeout' => env('TUMIZI_TIMEOUT', 20),
+    ],
 
     /*
     |--------------------------------------------------------------------------
