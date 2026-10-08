@@ -42,7 +42,7 @@ class UserResource extends Resource
                     ->minValue(0)
                     ->step(0.01)
                     ->default(5)
-                    ->helperText('Price per page for this user (billing). Default is 5 when empty.'),
+                    ->helperText('Optional user-specific billing override. Leave empty to use the default from App Settings → Price per page.'),
                 Forms\Components\DateTimePicker::make('email_verified_at'),
                 Forms\Components\TextInput::make('password')
                     ->password()
@@ -78,7 +78,7 @@ class UserResource extends Resource
                     ->label('Price/page')
                     ->numeric(decimalPlaces: 2)
                     ->sortable()
-                    ->placeholder('5 (default)'),
+                    ->placeholder('App Settings default'),
                 Tables\Columns\TextColumn::make('roles.name')
                     ->label('Roles')
                     ->badge()
