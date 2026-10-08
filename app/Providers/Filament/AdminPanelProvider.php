@@ -35,7 +35,7 @@ class AdminPanelProvider extends PanelProvider
                 // 'Kumbh Sans' 
                 // 'Montserrat'
             )
-            // ->favicon(asset('images/echonet-logo.pngg'))
+            ->favicon(asset('favicon.svg'))
 
             ->brandName('TenthLine')
             // ->brandLogo(asset('images/echonet-logo.png'))
